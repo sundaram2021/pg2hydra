@@ -21,6 +21,17 @@ cp .env.example .env    # fill in DATABASE_URL, HYDRA_DB_API_KEY, HYDRA_DATABASE
 npm run build           # optional — the CLI also runs straight from src on Node 22+
 ```
 
+For `DATABASE_URL`, use Supabase's **session pooler** string (Project Settings → Database →
+Connection string → Session pooler):
+
+```
+postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
+The direct `db.<project-ref>.supabase.co` host resolves to IPv6 only, so it fails with
+`connect ENETUNREACH` on GitHub Codespaces, most CI runners, and any network without IPv6.
+The pooler has an IPv4 address and works everywhere.
+
 ## Use
 
 ```bash

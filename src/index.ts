@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { assertConfig, config } from './config.ts';
-import { applySchema, countRows, openFailures, planTables, pool, progress, syncState } from './db.ts';
+import {
+  applySchema,
+  countRows,
+  explainConnectionError,
+  openFailures,
+  planTables,
+  pool,
+  progress,
+  syncState,
+} from './db.ts';
 import { migrate, redrive, sync, watch } from './migrate.ts';
 
 const USAGE = `pg2hydra — Supabase Postgres -> HydraDB migration engine
@@ -126,7 +135,9 @@ async function main(): Promise<void> {
 
 main()
   .catch((err) => {
+    const explanation = explainConnectionError(err);
     console.error(`\nx ${err instanceof Error ? err.message : String(err)}`);
+    if (explanation) console.error(`\n${explanation}`);
     process.exitCode = 1;
   })
   .finally(async () => {

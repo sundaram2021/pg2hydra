@@ -1,12 +1,58 @@
 import pg from 'pg';
+import { setDefaultResultOrder } from 'node:dns';
 import { readFileSync } from 'node:fs';
 import { config } from './config.ts';
+
+if (config.forceIpv4) setDefaultResultOrder('ipv4first');
 
 export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
   max: 4,
   application_name: 'pg2hydra',
 });
+
+export function explainConnectionError(err: unknown): string | null {
+  const code = (err as { code?: string } | null)?.code;
+  const host = (() => {
+    try {
+      return new URL(config.databaseUrl).hostname;
+    } catch {
+      return '';
+    }
+  })();
+
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') {
+    return [
+      `Cannot reach the Postgres host${host ? ` (${host})` : ''} — no route to its address.`,
+      '',
+      "Supabase's direct connection host (db.<ref>.supabase.co) is IPv6-only, and many",
+      'networks (GitHub Codespaces, most CI runners, some corporate LANs) have no IPv6.',
+      '',
+      'Use the Supavisor pooler instead — it has an IPv4 address. In the Supabase dashboard:',
+      '  Project Settings -> Database -> Connection string -> Session pooler',
+      '',
+      'It looks like this (note the port, and the project ref inside the username):',
+      '  postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres',
+      '',
+      'Put that in DATABASE_URL. Prefer the session pooler on port 5432; the transaction',
+      'pooler on 6543 also works for this tool but drops session state between statements.',
+    ].join('\n');
+  }
+
+  if (code === 'ENOTFOUND') {
+    return `Postgres host${host ? ` "${host}"` : ''} does not resolve. Check DATABASE_URL for typos.`;
+  }
+
+  if (code === 'ETIMEDOUT') {
+    return `Timed out connecting to${host ? ` ${host}` : ' Postgres'}. Check the port and any IP allow-list on the database.`;
+  }
+
+  if (code === '28P01') {
+    return 'Postgres rejected the credentials. With the Supabase pooler the username is postgres.<project-ref>, not plain postgres.';
+  }
+
+  return null;
+}
 
 export type Row = Record<string, unknown>;
 
