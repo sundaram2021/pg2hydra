@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 
-// Minimal .env loader — no dependency needed for KEY=value files.
 function loadEnvFile(path = '.env'): void {
   let raw: string;
   try {
@@ -52,19 +51,18 @@ export const config = {
   },
 
   batchSize: num('BATCH_SIZE', 1000),
-  // HydraDB documents a maximum of 20 source objects per ingest request.
+
   uploadChunk: Math.min(num('UPLOAD_CHUNK', 20), 20),
   concurrency: num('CONCURRENCY', 2),
   batchDelayMs: Number(process.env.BATCH_DELAY_MS ?? 0) || 0,
-  // Documented bulk guidance: pace ingest requests ~1s apart.
+
   requestDelayMs: Number(process.env.REQUEST_DELAY_MS ?? 1000) || 0,
   maxRetries: num('MAX_RETRIES', 6),
   verify: (process.env.VERIFY ?? 'true') !== 'false',
   verifyTimeoutMs: num('VERIFY_TIMEOUT_MS', 300_000),
 
-  // Incremental sync
   syncIntervalSeconds: num('SYNC_INTERVAL_SECONDS', 60),
-  /** Re-scan window, in seconds, to absorb rows committed out of clock order. */
+
   syncOverlapSeconds: num('SYNC_OVERLAP_SECONDS', 5),
   syncDeletes: (process.env.SYNC_DELETES ?? 'true') !== 'false',
 

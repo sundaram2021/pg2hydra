@@ -31,9 +31,6 @@ async function q<T extends Row>(sql: string, params: unknown[] = []): Promise<T[
   return res.rows;
 }
 
-// ---------------------------------------------------------------- introspection
-
-/** Reads base tables, their primary key and their foreign keys from the catalog. */
 export async function introspect(): Promise<Map<string, TableMeta>> {
   const schema = config.schema;
 
@@ -87,7 +84,7 @@ export async function introspect(): Promise<Map<string, TableMeta>> {
   }
   for (const { table_name, column_name } of pks) {
     const meta = metas.get(table_name);
-    if (meta && !meta.pk) meta.pk = column_name; // first PK column drives keyset paging
+    if (meta && !meta.pk) meta.pk = column_name;
   }
   for (const fk of fks) {
     metas.get(fk.table_name)?.fks.push({
@@ -99,10 +96,6 @@ export async function introspect(): Promise<Map<string, TableMeta>> {
   return metas;
 }
 
-/**
- * Parents before children. Self-references are ignored here and patched in a
- * second pass (see migrate.ts), and a genuine multi-table cycle throws loudly.
- */
 export function topoSort(metas: Map<string, TableMeta>, only: string[] = []): string[] {
   const scope = new Set(only.length ? only : [...metas.keys()]);
   const pending = new Set(scope);
@@ -132,7 +125,6 @@ export function topoSort(metas: Map<string, TableMeta>, only: string[] = []): st
   return order;
 }
 
-/** Tables to process, honouring TABLES / SKIP_TABLES and FK ordering. */
 export async function planTables(explicit: string[] = []): Promise<{
   metas: Map<string, TableMeta>;
   order: string[];
@@ -148,9 +140,6 @@ export async function planTables(explicit: string[] = []): Promise<{
   return { metas, order: topoSort(metas, scope) };
 }
 
-// ------------------------------------------------------------------- extraction
-
-/** Keyset pagination — O(batch) regardless of how far into the table we are. */
 export async function fetchBatch(
   meta: TableMeta,
   afterPk: string | null,
@@ -170,8 +159,6 @@ export async function countRows(table: string): Promise<number> {
   const rows = await q<{ n: string }>(`SELECT count(*)::text AS n FROM ${qualified(table)}`);
   return Number(rows[0]?.n ?? 0);
 }
-
-// -------------------------------------------------------------- bookkeeping I/O
 
 export async function applySchema(): Promise<void> {
   const sql = readFileSync(new URL('../sql/schema.sql', import.meta.url), 'utf8');
@@ -213,7 +200,6 @@ export async function resetCheckpoint(table: string): Promise<void> {
   await pool.query('DELETE FROM migration_meta.checkpoints WHERE source_table = $1', [table]);
 }
 
-/** Written BEFORE the checkpoint advances, so a crash never loses a mapping. */
 export async function recordMappings(
   entries: { table: string; pk: string; hydraId: string; hash: string }[],
 ): Promise<void> {
@@ -234,7 +220,6 @@ export async function recordMappings(
   );
 }
 
-/** pk -> { hydraId, hash } for a set of source rows. Used for FK resolution and hash skipping. */
 export async function lookupMappings(
   table: string,
   pks: string[],
@@ -304,8 +289,6 @@ export async function resolveFailures(table: string, pks: string[]): Promise<voi
   );
 }
 
-// -------------------------------------------------------------- incremental sync
-
 export async function getWatermark(table: string): Promise<Date | null> {
   const rows = await q<{ last_synced_at: Date | null }>(
     'SELECT last_synced_at FROM migration_meta.sync_state WHERE source_table = $1',
@@ -333,7 +316,6 @@ export async function setWatermark(
   );
 }
 
-/** Rows changed since the watermark (minus an overlap window), keyset-paged by pk. */
 export async function fetchChanged(
   meta: TableMeta,
   column: string,
@@ -360,10 +342,6 @@ export async function fetchChanged(
   );
 }
 
-/**
- * Source rows that vanished: present in id_map, absent from the table.
- * Drives HydraDB deletes so the graph doesn't keep tombstones.
- */
 export async function findDeleted(meta: TableMeta, limit: number): Promise<
   { pk: string; hydraId: string }[]
 > {

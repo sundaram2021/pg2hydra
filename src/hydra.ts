@@ -1,24 +1,10 @@
 import { config } from './config.ts';
 
-/**
- * HydraDB v2 client (https://api.hydradb.com, API-Version: 2).
- *
- * Verified against the published OpenAPI spec:
- *  - POST   /context/ingest   multipart/form-data ONLY (a JSON body returns 415).
- *                             `database` required; `app_knowledge` / `memories` /
- *                             `document_metadata` / `graph_payload` are JSON *strings*.
- *  - GET    /context/status   poll by source id, not by job id.
- *  - DELETE /context          JSON body { database, collection, ids, type }.
- * Every response is enveloped: { success, data, error, meta }.
- */
-
-/** ForcefulRelationsPayload — author-declared edges between sources. */
 export type Relations = {
   hydradb_source_ids: string[];
   properties?: Record<string, unknown>;
 };
 
-/** One item of the `app_knowledge` array: a structured, non-file source. */
 export type KnowledgeSource = {
   id: string;
   title?: string;
@@ -32,18 +18,17 @@ export type KnowledgeSource = {
   additional_metadata?: Record<string, unknown>;
   relations?: Relations;
   timestamp?: string;
-  // v2 canonical scope, echoed per item; v1 aliases are added on the wire.
+
   database?: string;
   collection?: string;
 };
 
-/** One item of the `memories` array. */
 export type MemoryRecord = {
   id: string;
   title?: string;
   text: string;
   infer: boolean;
-  /** JSON-stringified objects — the memory model takes strings, not objects. */
+
   metadata?: string;
   additional_metadata?: string;
   relations?: Relations;
@@ -56,7 +41,7 @@ export class HydraError extends Error {
   constructor(status: number, message: string, requestId?: string) {
     super(`HydraDB ${status}: ${message}${requestId ? ` (request_id ${requestId})` : ''}`);
     this.status = status;
-    // 400 validation / 413 too large / 415 wrong content type / 422 bad shape are permanent.
+
     this.retryable = status === 408 || status === 429 || status >= 500 || status === 0;
     this.requestId = requestId;
   }
@@ -79,7 +64,6 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
   };
 }
 
-/** Single retrying HTTP call. `body` is either FormData (multipart) or a JSON value. */
 async function call<T>(
   path: string,
   init: { method: string; form?: FormData; json?: unknown; extraHeaders?: Record<string, string> },
@@ -90,9 +74,9 @@ async function call<T>(
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     if (attempt > 0) {
       const backoff = Math.min(30_000, 500 * 2 ** (attempt - 1));
-      await sleep(backoff / 2 + Math.random() * backoff); // jitter
+      await sleep(backoff / 2 + Math.random() * backoff);
     } else if (config.requestDelayMs) {
-      await sleep(config.requestDelayMs); // documented guidance: pace bulk ingestion
+      await sleep(config.requestDelayMs);
     }
 
     let res: Response;
@@ -141,10 +125,9 @@ async function call<T>(
 function scopeFields(form: FormData): void {
   form.set('database', config.hydra.database);
   if (config.hydra.collection) form.set('collection', config.hydra.collection);
-  form.set('upsert', 'true'); // deterministic ids + upsert = idempotent re-runs
+  form.set('upsert', 'true');
 }
 
-/** POST /context/ingest with type=knowledge. Returns the ids HydraDB accepted. */
 export async function ingestKnowledge(sources: KnowledgeSource[]): Promise<string[]> {
   const form = new FormData();
   scopeFields(form);
@@ -156,7 +139,7 @@ export async function ingestKnowledge(sources: KnowledgeSource[]): Promise<strin
         ...source,
         database: config.hydra.database,
         collection: config.hydra.collection,
-        // v1 aliases, harmlessly ignored by v2, required by v1 per-item.
+
         tenant_id: config.hydra.database,
         sub_tenant_id: config.hydra.collection || config.hydra.database,
       })),
@@ -166,7 +149,6 @@ export async function ingestKnowledge(sources: KnowledgeSource[]): Promise<strin
   return sources.map((source) => source.id);
 }
 
-/** POST /context/ingest with type=memory. */
 export async function ingestMemories(memories: MemoryRecord[]): Promise<string[]> {
   const form = new FormData();
   scopeFields(form);
@@ -191,10 +173,6 @@ type StatusResponse = {
   }[];
 };
 
-/**
- * `graph_creation` already means "indexed and retrievable" — the graph is still
- * being built but the source is searchable, so we accept it as done.
- */
 function classify(status: string): IndexingState {
   switch (status.toLowerCase()) {
     case 'completed':
@@ -215,7 +193,6 @@ function classify(status: string): IndexingState {
   }
 }
 
-/** GET /context/status — one call covers a whole batch of ids. */
 export async function fetchStatus(
   ids: string[],
 ): Promise<Map<string, { state: IndexingState; error: string }>> {
@@ -237,12 +214,6 @@ export async function fetchStatus(
   return out;
 }
 
-/**
- * Polls a batch to a terminal state. Returns the ids that indexed cleanly and
- * the ones that failed (with reasons); anything still pending at the deadline
- * is reported as failed so it lands in the dead-letter table rather than being
- * silently assumed good.
- */
 export async function waitForIndexing(
   ids: string[],
 ): Promise<{ indexed: string[]; failed: Map<string, string> }> {
@@ -272,10 +243,6 @@ export async function waitForIndexing(
   return { indexed, failed };
 }
 
-/**
- * DELETE /context. `strict` opts into honest status codes — without it the API
- * returns 200 even when nothing was deleted. 404 means already gone: not an error.
- */
 export async function deleteSources(
   ids: string[],
   type: 'knowledge' | 'memory' = 'knowledge',
@@ -294,12 +261,11 @@ export async function deleteSources(
     });
     return data.deleted_count ?? ids.length;
   } catch (err) {
-    if (err instanceof HydraError && err.status === 404) return 0; // nothing matched
+    if (err instanceof HydraError && err.status === 404) return 0;
     throw err;
   }
 }
 
-/** Bounded-concurrency map — keeps in-flight requests under CONCURRENCY. */
 export async function mapLimit<T, R>(
   items: T[],
   limit: number,

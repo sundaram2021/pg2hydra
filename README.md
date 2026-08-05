@@ -101,26 +101,6 @@ array, with `infer: false` so a stored fact is never re-interpreted.
 Document ids are `{table}_{pk}` — stable and recomputable from the source row alone, which is
 what makes every write an idempotent upsert.
 
-## How the guarantees are implemented
-
-| Guarantee | Mechanism |
-| --- | --- |
-| Resumable | `migration_meta.checkpoints.last_pk` + keyset paging (`WHERE pk > last_pk`, never `OFFSET`) |
-| Idempotent | deterministic ids + `upsert: true` on every write |
-| Cheap re-runs | `content_hash` in `id_map`; unchanged rows are skipped before any network call |
-| No mapping lost on crash | `id_map` is written **before** the checkpoint advances — a crash can only repeat work |
-| Parents before children | FK graph from `information_schema`, topologically sorted; multi-table cycles throw loudly |
-| Self-references | `employees.manager_id` is migrated without the self edge, then patched in a second pass |
-| No orphan graph | a parent missing from `id_map` is a hard per-row failure, never a silent skip |
-| Failure isolation | one bad row goes to `migration_meta.failures`; the batch continues |
-| Rate-limit safety | bounded worker pool (`CONCURRENCY`) + exponential backoff with jitter, honours `Retry-After`; 400/413/415/422 fail fast instead of retrying |
-| Backpressure | `BATCH_SIZE`, `UPLOAD_CHUNK`, `BATCH_DELAY_MS` — point `DATABASE_URL` at a read replica when you have one |
-| Schema drift | the transformer validates expected columns per batch and fails fast instead of rendering blanks |
-| Verified ingestion | `GET /context/status` is polled per source id to a terminal state before rows are accepted (`VERIFY=false` to skip) |
-| Batch limits respected | `UPLOAD_CHUNK` is capped at HydraDB's documented 20 sources per ingest request, paced by `REQUEST_DELAY_MS` |
-| Incremental | `sync` watermarks on a timestamp column and re-ingests only what moved |
-| Deletes propagate | rows in `id_map` with no surviving source row are deleted from HydraDB, children before parents |
-
 ## Layout
 
 ```
@@ -132,26 +112,3 @@ src/mapping.ts     ← edit this: templates, targets, relation labels, watermark
 src/migrate.ts     the engine: prepare → load → verify → commit, plus self-ref, sync and re-drive passes
 src/index.ts       CLI
 ```
-
-## Incremental sync
-
-`sync` is the steady-state counterpart to `migrate`. Per table it:
-
-1. Picks a watermark column — `updatedAtColumn` from `src/mapping.ts`, else the first of
-   `updated_at` / `modified_at` / `updatedAt` / `last_modified` / `created_at` that exists.
-   Tables with none fall back to a full keyset re-scan, where content hashing keeps the cost at
-   "read the rows" — unchanged rows never reach the network.
-2. Reads everything newer than `last_synced_at` minus `SYNC_OVERLAP_SECONDS`, so rows committed
-   slightly out of clock order aren't stepped over.
-3. Runs the same `prepare → load → verify → commit` path as the backfill — same templates, same
-   deterministic ids, same upsert. Self-referencing edges are included, since every row already
-   exists in `id_map` by this point.
-4. Advances `migration_meta.sync_state.last_synced_at` to the highest timestamp it actually saw,
-   never to wall-clock time.
-5. Reconciles deletes: ids in `id_map` whose source row is gone are removed from HydraDB
-   (`DELETE /context` with `X-HydraDB-Delete-Status: strict`) and dropped from `id_map`. Children
-   are processed before parents so no edge is left pointing at a deleted node. Turn off with
-   `SYNC_DELETES=false`.
-
-`sync --watch` loops at `SYNC_INTERVAL_SECONDS`; a failed pass is logged and the next one still runs.
-Run it as a long-lived process or drop the one-shot `sync` into cron — the watermark makes both safe.

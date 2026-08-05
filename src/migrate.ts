@@ -89,8 +89,6 @@ function warnOnce(key: string, message: string): void {
   console.warn(`  ! ${message}`);
 }
 
-// --------------------------------------------------------------- relation build
-
 function usableFks(meta: TableMeta, metas: Map<string, TableMeta>, includeSelf: boolean) {
   const ignored = new Set(configFor(meta.table).ignoreFks ?? []);
   return meta.fks.filter((fk) => {
@@ -99,7 +97,7 @@ function usableFks(meta: TableMeta, metas: Map<string, TableMeta>, includeSelf: 
     const parent = metas.get(fk.parentTable);
     if (!parent) return false;
     if (targetFor(fk.parentTable) === 'skip') return false;
-    // Forceful relations live within one store, so knowledge->memory edges are dropped.
+
     if (targetFor(meta.table) !== targetFor(fk.parentTable)) {
       warnOnce(
         `${meta.table}.${fk.column}`,
@@ -118,7 +116,6 @@ function usableFks(meta: TableMeta, metas: Map<string, TableMeta>, includeSelf: 
   });
 }
 
-/** Resolves FK values to parent HydraDB ids via id_map, one query per parent table. */
 async function resolveParents(
   meta: TableMeta,
   metas: Map<string, TableMeta>,
@@ -140,10 +137,6 @@ async function resolveParents(
   return byParent;
 }
 
-/**
- * ForcefulRelationsPayload: every parent id in `hydradb_source_ids`, with the
- * FK-derived labels carried in `properties` so the edge keeps its meaning.
- */
 function buildRelations(
   meta: TableMeta,
   metas: Map<string, TableMeta>,
@@ -179,9 +172,6 @@ function buildRelations(
   };
 }
 
-// ------------------------------------------------------------------ batch cycle
-
-/** Pure transform of a row batch into HydraDB payloads. Failures are per-row. */
 async function prepare(
   meta: TableMeta,
   metas: Map<string, TableMeta>,
@@ -228,8 +218,8 @@ async function prepare(
             id,
             title,
             text,
-            infer: false, // rows are already facts; never let the API re-interpret them
-            // memory metadata fields are JSON strings, not objects
+            infer: false,
+
             metadata: JSON.stringify(metadata),
             additional_metadata: JSON.stringify(
               userId === undefined ? additional : { ...additional, user_id: String(userId) },
@@ -270,7 +260,6 @@ async function prepare(
   return prepared;
 }
 
-/** Ingests in bounded-concurrency chunks; a bad chunk dead-letters, never aborts. */
 async function load(meta: TableMeta, prepared: Prepared[], stats: Stats): Promise<Prepared[]> {
   const chunks = chunk(prepared, config.uploadChunk);
 
@@ -293,7 +282,6 @@ async function load(meta: TableMeta, prepared: Prepared[], stats: Stats): Promis
   let accepted = results.filter((r) => r.ok).flatMap((r) => r.items);
 
   if (config.verify && accepted.length) {
-    // Ingestion is async: poll the source ids to a terminal indexing state.
     const byId = new Map(accepted.map((item) => [item.hydraId, item]));
     const { indexed, failed } = await waitForIndexing([...byId.keys()]);
     for (const [id, reason] of failed) {
@@ -308,7 +296,6 @@ async function load(meta: TableMeta, prepared: Prepared[], stats: Stats): Promis
   return accepted;
 }
 
-/** id_map is written before the checkpoint advances — a crash can only repeat work. */
 async function commit(meta: TableMeta, accepted: Prepared[]): Promise<void> {
   await recordMappings(
     accepted.map((item) => ({
@@ -336,8 +323,6 @@ async function processRows(
   }
   await commit(meta, await load(meta, prepared, stats));
 }
-
-// ---------------------------------------------------------------------- backfill
 
 async function migrateTable(
   meta: TableMeta,
@@ -377,11 +362,6 @@ async function migrateTable(
   return stats;
 }
 
-/**
- * Second pass for self-referencing FKs (employees.manager_id -> employees.id).
- * Every row now exists in id_map, so the self edges resolve and the upsert
- * replaces the document with its related version.
- */
 async function patchSelfReferences(
   meta: TableMeta,
   metas: Map<string, TableMeta>,
@@ -427,14 +407,6 @@ export async function migrate(options: RunOptions = {}): Promise<Stats> {
   return total;
 }
 
-// -------------------------------------------------------------- incremental sync
-
-/**
- * One incremental pass over a table: rows whose watermark column moved since
- * the last run are re-rendered and upserted. Tables without a timestamp column
- * fall back to a full keyset re-scan, where content hashing keeps the cost to
- * "read the rows" — unchanged rows never reach the network.
- */
 async function syncTable(
   meta: TableMeta,
   metas: Map<string, TableMeta>,
@@ -445,14 +417,14 @@ async function syncTable(
 
   const column = watermarkColumn(meta);
   const previous = await getWatermark(meta.table);
-  // Overlap window: rows committed slightly out of clock order still get picked up.
+
   const since =
     previous && column ? new Date(previous.getTime() - config.syncOverlapSeconds * 1000) : null;
   let highest: Date | null = previous;
   let lastPk: string | null = null;
 
   for (;;) {
-    const rows = column
+    const rows: Row[] = column
       ? await fetchChanged(meta, column, since, lastPk, config.batchSize)
       : await fetchBatch(meta, lastPk, config.batchSize);
     if (!rows.length) break;
@@ -478,7 +450,6 @@ async function syncTable(
   return stats;
 }
 
-/** Rows that disappeared from the source are deleted from HydraDB and from id_map. */
 async function syncDeletes(meta: TableMeta, options: RunOptions): Promise<Stats> {
   const stats = zero();
   if (targetFor(meta.table) === 'skip' || !meta.pk) return stats;
@@ -519,7 +490,6 @@ async function syncDeletes(meta: TableMeta, options: RunOptions): Promise<Stats>
   return stats;
 }
 
-/** One full incremental pass across every in-scope table. */
 export async function sync(options: RunOptions = {}): Promise<Stats> {
   const { metas, order } = await planTables(options.tables);
   let total = zero();
@@ -530,7 +500,6 @@ export async function sync(options: RunOptions = {}): Promise<Stats> {
   }
   if (config.syncDeletes) {
     for (const table of [...order].reverse()) {
-      // children before parents, so an edge is never left pointing at a deleted node
       const meta = metas.get(table);
       if (meta) total = add(total, await syncDeletes(meta, options));
     }
@@ -538,7 +507,6 @@ export async function sync(options: RunOptions = {}): Promise<Stats> {
   return total;
 }
 
-/** `sync --watch`: run forever at SYNC_INTERVAL_SECONDS, surviving transient errors. */
 export async function watch(options: RunOptions = {}): Promise<never> {
   console.log(
     `Watching every ${config.syncIntervalSeconds}s (deletes ${config.syncDeletes ? 'on' : 'off'}). Ctrl+C to stop.`,
@@ -560,9 +528,6 @@ export async function watch(options: RunOptions = {}): Promise<never> {
   }
 }
 
-// ------------------------------------------------------------------------ redrive
-
-/** Retries dead-lettered rows once the underlying cause is fixed. */
 export async function redrive(tables: string[] = []): Promise<Stats> {
   const { metas, order } = await planTables(tables);
   let total = zero();
