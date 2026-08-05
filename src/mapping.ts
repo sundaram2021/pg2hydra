@@ -16,10 +16,17 @@ export type TableConfig = {
   target?: Target;
   /** Row -> the text that gets embedded. */
   text?: (row: Row) => string;
+  /** Row -> short title shown in HydraDB search results. */
+  title?: (row: Row) => string;
   /** Extra metadata merged on top of { table, pk }. */
   metadata?: (row: Row) => Record<string, unknown>;
   /** Column holding the owning user id — required when target is 'memory'. */
   userIdColumn?: string;
+  /**
+   * Timestamp column that incremental sync watermarks on. Auto-detected from
+   * updated_at / modified_at / created_at when omitted.
+   */
+  updatedAtColumn?: string;
   /** FK columns to ignore when building relations. */
   ignoreFks?: string[];
 };
@@ -96,9 +103,33 @@ export function renderText(meta: TableMeta, row: Row): string {
   return text;
 }
 
-export function renderMetadata(meta: TableMeta, row: Row): Record<string, unknown> {
-  const extra = configFor(meta.table).metadata?.(row) ?? {};
-  return { table: meta.table, source_pk: String(row[meta.pk]), ...extra };
+const WATERMARK_CANDIDATES = ['updated_at', 'modified_at', 'updatedAt', 'last_modified', 'created_at'];
+
+/** The column incremental sync watermarks on, or null for a full re-scan. */
+export function watermarkColumn(meta: TableMeta): string | null {
+  const explicit = configFor(meta.table).updatedAtColumn;
+  if (explicit) return meta.columns.includes(explicit) ? explicit : null;
+  return WATERMARK_CANDIDATES.find((column) => meta.columns.includes(column)) ?? null;
+}
+
+export function renderTitle(meta: TableMeta, row: Row): string {
+  const custom = configFor(meta.table).title;
+  return custom ? custom(row) : `${meta.table} ${String(row[meta.pk])}`;
+}
+
+/**
+ * `metadata` holds only what you declared in the HydraDB database metadata
+ * schema (the fast, pre-filtered path). Engine bookkeeping goes to
+ * `additional_metadata`, which is free-form and needs no schema declaration.
+ */
+export function renderMetadata(
+  meta: TableMeta,
+  row: Row,
+): { metadata: Record<string, unknown>; additional: Record<string, unknown> } {
+  return {
+    metadata: configFor(meta.table).metadata?.(row) ?? {},
+    additional: { table: meta.table, source_pk: String(row[meta.pk]) },
+  };
 }
 
 /** Change detector: unchanged rows are skipped on re-runs. */

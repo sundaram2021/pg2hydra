@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { assertConfig, config } from './config.ts';
-import { applySchema, countRows, openFailures, planTables, pool, progress } from './db.ts';
-import { migrate, redrive } from './migrate.ts';
+import { applySchema, countRows, openFailures, planTables, pool, progress, syncState } from './db.ts';
+import { migrate, redrive, sync, watch } from './migrate.ts';
 
 const USAGE = `pg2hydra — Supabase Postgres -> HydraDB migration engine
 
@@ -10,13 +10,15 @@ Usage
   pg2hydra init                 Create the migration_meta bookkeeping schema
   pg2hydra plan                 Print the FK-ordered table plan
   pg2hydra migrate [options]    Run the backfill (resumable, idempotent)
+  pg2hydra sync [options]       Incremental pass: changed rows + deletes
   pg2hydra redrive [options]    Retry dead-lettered rows
-  pg2hydra status               Per-table progress and open failures
+  pg2hydra status               Per-table progress, sync watermarks, open failures
 
 Options
   -t, --table <name>   Restrict to a table (repeatable). Default: TABLES env or all
       --dry-run        Extract + transform only, no writes
       --restart        Reset checkpoints and re-scan (content hashes skip unchanged rows)
+      --watch          (sync) Keep running every SYNC_INTERVAL_SECONDS
 `;
 
 async function main(): Promise<void> {
@@ -26,6 +28,7 @@ async function main(): Promise<void> {
       table: { type: 'string', short: 't', multiple: true },
       'dry-run': { type: 'boolean', default: false },
       restart: { type: 'boolean', default: false },
+      watch: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -66,6 +69,14 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'sync': {
+      assertConfig();
+      const options = { tables, dryRun: values['dry-run'] };
+      if (values.watch) await watch(options);
+      else await sync(options);
+      break;
+    }
+
     case 'redrive': {
       assertConfig();
       await redrive(tables);
@@ -86,6 +97,17 @@ async function main(): Promise<void> {
             (row.finished_at ? '  [finished]' : ''),
         );
       }
+      const watermarks = await syncState();
+      if (watermarks.length) {
+        console.log('\nSync watermarks:');
+        for (const w of watermarks) {
+          console.log(
+            `  ${w.source_table.padEnd(28)} ${(w.watermark_column ?? 'full re-scan').padEnd(14)} ` +
+              `synced through ${w.last_synced_at?.toISOString() ?? '—'}`,
+          );
+        }
+      }
+
       const failures = await openFailures();
       if (failures.length) {
         console.log('\nOpen failures:');

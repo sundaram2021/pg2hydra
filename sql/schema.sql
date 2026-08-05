@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS migration_meta.id_map (
   PRIMARY KEY (source_table, source_pk)
 );
 
+-- Incremental sync watermark: the highest source timestamp already synced.
+CREATE TABLE IF NOT EXISTS migration_meta.sync_state (
+  source_table    text PRIMARY KEY,
+  watermark_column text,
+  last_synced_at  timestamptz,
+  last_run_at     timestamptz NOT NULL DEFAULT now()
+);
+
 -- Rows that failed transform or load. Re-drivable without touching the checkpoint.
 CREATE TABLE IF NOT EXISTS migration_meta.failures (
   id           bigserial PRIMARY KEY,

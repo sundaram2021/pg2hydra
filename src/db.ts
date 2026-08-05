@@ -304,6 +304,97 @@ export async function resolveFailures(table: string, pks: string[]): Promise<voi
   );
 }
 
+// -------------------------------------------------------------- incremental sync
+
+export async function getWatermark(table: string): Promise<Date | null> {
+  const rows = await q<{ last_synced_at: Date | null }>(
+    'SELECT last_synced_at FROM migration_meta.sync_state WHERE source_table = $1',
+    [table],
+  );
+  return rows[0]?.last_synced_at ?? null;
+}
+
+export async function setWatermark(
+  table: string,
+  column: string | null,
+  syncedAt: Date | null,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO migration_meta.sync_state (source_table, watermark_column, last_synced_at, last_run_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (source_table) DO UPDATE
+       SET watermark_column = EXCLUDED.watermark_column,
+           last_synced_at = GREATEST(
+             migration_meta.sync_state.last_synced_at,
+             EXCLUDED.last_synced_at
+           ),
+           last_run_at = now()`,
+    [table, column, syncedAt],
+  );
+}
+
+/** Rows changed since the watermark (minus an overlap window), keyset-paged by pk. */
+export async function fetchChanged(
+  meta: TableMeta,
+  column: string,
+  since: Date | null,
+  afterPk: string | null,
+  limit: number,
+): Promise<Row[]> {
+  const pk = ident(meta.pk);
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (since) {
+    params.push(since);
+    clauses.push(`${ident(column)} > $${params.length}`);
+  }
+  if (afterPk !== null) {
+    params.push(afterPk);
+    clauses.push(`${pk} > $${params.length}`);
+  }
+  params.push(limit);
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  return q<Row>(
+    `SELECT * FROM ${qualified(meta.table)} ${where} ORDER BY ${pk} LIMIT $${params.length}`,
+    params,
+  );
+}
+
+/**
+ * Source rows that vanished: present in id_map, absent from the table.
+ * Drives HydraDB deletes so the graph doesn't keep tombstones.
+ */
+export async function findDeleted(meta: TableMeta, limit: number): Promise<
+  { pk: string; hydraId: string }[]
+> {
+  const rows = await q<{ source_pk: string; hydra_source_id: string }>(
+    `SELECT m.source_pk, m.hydra_source_id
+       FROM migration_meta.id_map m
+      WHERE m.source_table = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM ${qualified(meta.table)} t
+           WHERE t.${ident(meta.pk)}::text = m.source_pk
+        )
+      LIMIT $2`,
+    [meta.table, limit],
+  );
+  return rows.map((r) => ({ pk: r.source_pk, hydraId: r.hydra_source_id }));
+}
+
+export async function forgetMappings(table: string, pks: string[]): Promise<void> {
+  if (!pks.length) return;
+  await pool.query(
+    'DELETE FROM migration_meta.id_map WHERE source_table = $1 AND source_pk = ANY($2::text[])',
+    [table, pks],
+  );
+}
+
+export async function syncState(): Promise<
+  { source_table: string; watermark_column: string | null; last_synced_at: Date | null; last_run_at: Date }[]
+> {
+  return q('SELECT * FROM migration_meta.sync_state ORDER BY source_table');
+}
+
 export async function progress(): Promise<
   { source_table: string; last_pk: string; rows_done: string; finished_at: Date | null }[]
 > {

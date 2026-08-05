@@ -45,20 +45,28 @@ export const config = {
   schema: process.env.PG_SCHEMA ?? 'public',
 
   hydra: {
-    baseUrl: (process.env.HYDRA_BASE_URL ?? '').replace(/\/$/, ''),
-    apiKey: process.env.HYDRA_API_KEY ?? '',
-    knowledgePath: process.env.HYDRA_KNOWLEDGE_PATH ?? '/upload/knowledge',
-    memoryPath: process.env.HYDRA_MEMORY_PATH ?? '/memories/add_memory',
-    verifyPath: process.env.HYDRA_VERIFY_PATH ?? '/ingestion/verify_processing',
+    baseUrl: (process.env.HYDRA_BASE_URL ?? 'https://api.hydradb.com').replace(/\/$/, ''),
+    apiKey: process.env.HYDRA_DB_API_KEY ?? process.env.HYDRA_API_KEY ?? '',
+    database: process.env.HYDRA_DATABASE ?? '',
+    collection: process.env.HYDRA_COLLECTION ?? '',
   },
 
   batchSize: num('BATCH_SIZE', 1000),
-  uploadChunk: num('UPLOAD_CHUNK', 100),
-  concurrency: num('CONCURRENCY', 4),
+  // HydraDB documents a maximum of 20 source objects per ingest request.
+  uploadChunk: Math.min(num('UPLOAD_CHUNK', 20), 20),
+  concurrency: num('CONCURRENCY', 2),
   batchDelayMs: Number(process.env.BATCH_DELAY_MS ?? 0) || 0,
+  // Documented bulk guidance: pace ingest requests ~1s apart.
+  requestDelayMs: Number(process.env.REQUEST_DELAY_MS ?? 1000) || 0,
   maxRetries: num('MAX_RETRIES', 6),
   verify: (process.env.VERIFY ?? 'true') !== 'false',
-  verifyTimeoutMs: num('VERIFY_TIMEOUT_MS', 120_000),
+  verifyTimeoutMs: num('VERIFY_TIMEOUT_MS', 300_000),
+
+  // Incremental sync
+  syncIntervalSeconds: num('SYNC_INTERVAL_SECONDS', 60),
+  /** Re-scan window, in seconds, to absorb rows committed out of clock order. */
+  syncOverlapSeconds: num('SYNC_OVERLAP_SECONDS', 5),
+  syncDeletes: (process.env.SYNC_DELETES ?? 'true') !== 'false',
 
   tables: list('TABLES'),
   skipTables: list('SKIP_TABLES'),
@@ -66,7 +74,9 @@ export const config = {
 
 export function assertConfig(needsHydra = true): void {
   if (!config.databaseUrl) throw new Error('DATABASE_URL is not set (see .env.example)');
-  if (needsHydra && !config.hydra.baseUrl) {
-    throw new Error('HYDRA_BASE_URL is not set (see .env.example)');
+  if (!needsHydra) return;
+  if (!config.hydra.apiKey) throw new Error('HYDRA_DB_API_KEY is not set (see .env.example)');
+  if (!config.hydra.database) {
+    throw new Error('HYDRA_DATABASE is not set — it is required on every HydraDB v2 call');
   }
 }
