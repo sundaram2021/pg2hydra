@@ -31,17 +31,21 @@ export function createClient(): Hydra {
   });
 }
 
+type FailedEntry = { database?: string; error?: string };
+
 async function assertNotFailed(client: Hydra, database: string): Promise<void> {
-  const listed = await client.databases.list();
-  const failed = (
-    listed.data as unknown as
-      { failed_databases?: { database?: string; error?: string }[] } | undefined
-  )?.failed_databases;
-  const match = failed?.find((entry) => entry.database === database);
-  if (match)
-    throw new Error(
-      `HydraDB reports database ${database} as failed: ${match.error ?? 'unknown'}. Provisioning will never complete; use a new database name.`,
-    );
+  const listed = (await client.databases.list()).data as unknown as
+    | { failedDatabases?: FailedEntry[]; failed_databases?: FailedEntry[] }
+    | undefined;
+  const failed = listed?.failedDatabases ?? listed?.failed_databases ?? [];
+  const match = failed.find((entry) => entry.database === database);
+  if (!match) return;
+  throw new Error(
+    `HydraDB reports database "${database}" as failed and it will never become ready.\n` +
+      `  reason: ${match.error ?? 'unknown'}\n` +
+      `  fix: set HYDRA_DATABASE to a new name, or delete this one and retry:\n` +
+      `  curl -X DELETE "${config.hydraBaseUrl}/databases?database=${database}" -H "Authorization: Bearer $HYDRA_DB_API_KEY" -H "API-Version: 2"`,
+  );
 }
 
 function alreadyExists(error: unknown): boolean {
@@ -65,6 +69,7 @@ export async function ensureDatabase(client: Hydra): Promise<void> {
     log.info(`database ${database} already exists`);
   }
 
+  const started = Date.now();
   await waitFor(
     `database ${database} readiness`,
     config.bootstrapTimeoutMs,
@@ -76,7 +81,11 @@ export async function ensureDatabase(client: Hydra): Promise<void> {
         config.maxRetries,
         () => client.databases.status({ database }),
       );
-      return Boolean(response.data?.infra?.readyForIngestion);
+      if (response.data?.infra?.readyForIngestion) return true;
+      log.info(
+        `waiting for ${database} to provision (${Math.round((Date.now() - started) / 1000)}s)`,
+      );
+      return false;
     },
   );
   log.done(`database ${database} ready for ingestion`);
@@ -93,41 +102,44 @@ export async function waitIndexed(
     ? ['completed']
     : ['completed', 'graph_creation'];
 
-  await waitFor(
-    `indexing of ${ids.length} sources`,
-    config.verifyTimeoutMs,
-    3000,
-    async () => {
-      const response = await withRetry(
-        'context.status',
-        config.maxRetries,
-        () =>
-          client.context.status({
-            database: config.hydraDatabase,
-            ...(config.hydraCollection
-              ? { collection: config.hydraCollection }
-              : {}),
-            ids: [...pending],
-          }),
-      );
+  const check = async (): Promise<boolean> => {
+    const response = await withRetry('context.status', config.maxRetries, () =>
+      client.context.status({
+        database: config.hydraDatabase,
+        ...(config.hydraCollection
+          ? { collection: config.hydraCollection }
+          : {}),
+        ids: [...pending],
+      }),
+    );
 
-      for (const status of response.data?.statuses ?? []) {
-        const state = status.indexingStatus ?? '';
-        if (!status.id) continue;
-        if (settled.includes(state)) pending.delete(status.id);
-        if (state === 'failed' || state === 'errored') {
-          log.warn(
-            `indexing failed for ${status.id}: ${status.errorMessage || 'unknown error'}`,
-          );
-          pending.delete(status.id);
-        }
-      }
-      if (pending.size > 0)
-        log.info(
-          `indexing: ${ids.length - pending.size}/${ids.length} settled`,
+    for (const status of response.data?.statuses ?? []) {
+      const state = status.indexingStatus ?? '';
+      if (!status.id) continue;
+      if (settled.includes(state)) pending.delete(status.id);
+      if (state === 'failed' || state === 'errored') {
+        log.warn(
+          `indexing failed for ${status.id}: ${status.errorMessage || 'unknown error'}`,
         );
-      return pending.size === 0;
-    },
-  );
-  log.done(`indexed ${ids.length} sources`);
+        pending.delete(status.id);
+      }
+    }
+    if (pending.size > 0)
+      log.info(`indexing: ${ids.length - pending.size}/${ids.length} settled`);
+    return pending.size === 0;
+  };
+
+  try {
+    await waitFor(
+      `indexing of ${ids.length} sources`,
+      config.verifyTimeoutMs,
+      3000,
+      check,
+    );
+    log.done(`indexed ${ids.length} sources`);
+  } catch {
+    log.warn(
+      `${pending.size} of ${ids.length} sources are still indexing; continuing without waiting`,
+    );
+  }
 }

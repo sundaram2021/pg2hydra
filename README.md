@@ -88,6 +88,8 @@ Other scripts: `pnpm build`, `pnpm typecheck`, `pnpm format`, `pnpm db:down`.
 
 ## Notes
 
-- Create HydraDB databases without a metadata schema. Declaring `database_metadata_schema` at creation caused databases to report ready and then fail permanently, so `DECLARE_METADATA_SCHEMA` defaults to `false` and the `pg_*` fields ship as `additional_metadata`.
+- Create HydraDB databases without a metadata schema. Declaring `database_metadata_schema` at creation makes provisioning fail with `ensure metadata field indexes: mongodb create metadata field indexes: Index limit exceeded`, and the database is stuck for good. So `DECLARE_METADATA_SCHEMA` defaults to `false` and the `pg_*` fields ship as `additional_metadata` instead, which stays filterable through `metadata_filters.additional_metadata`.
+- A database in that failed state never becomes ready. The migration detects it on startup and stops in under a second with the reason and the `curl` to delete it, rather than polling. Deleting the name frees it for reuse.
+- Set `PG2HYDRA_DEBUG=1` to print stack traces on failure.
 - Sources become searchable at `graph_creation` and reach `completed` when the graph pass finishes. `WAIT_FOR_GRAPH=false` means the run does not block on that phase.
 - This is a full-copy migration. There is no incremental sync and no delete propagation yet, and rows are paged without a snapshot, so migrate from a quiet or static database.

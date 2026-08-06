@@ -133,11 +133,10 @@ async function main(): Promise<void> {
 
 main()
   .catch((error: unknown) => {
-    log.error(
-      error instanceof Error
-        ? `${error.message}\n${error.stack ?? ''}`
-        : String(error),
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(message);
+    if (process.env['PG2HYDRA_DEBUG'] && error instanceof Error && error.stack)
+      console.error(error.stack);
     process.exitCode = 1;
   })
   .finally(() => closePg());
