@@ -27,7 +27,8 @@ node src/index.ts bootstrap              # create the HydraDB database, wait unt
 node src/index.ts init                   # create the migration_meta bookkeeping schema
 node src/index.ts plan                   # show the FK-ordered table plan
 node src/index.ts migrate                # backfill
-node src/index.ts status                 # progress, watermarks, failures
+node src/index.ts status                 # progress, watermarks, failure counts
+node src/index.ts failures               # the actual error messages behind those counts
 ```
 
 The seed schema (`sql/seed.sql`) is deliberately shaped to exercise the engine: parent/child

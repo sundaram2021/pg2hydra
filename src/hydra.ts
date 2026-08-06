@@ -71,6 +71,29 @@ export async function createDatabase(schema: MetadataField[]): Promise<void> {
   }
 }
 
+export async function assertDatabaseReady(): Promise<void> {
+  let res;
+  try {
+    res = await hydra().databases.status({ database: config.hydra.database });
+  } catch (err) {
+    const status = (err as { statusCode?: number }).statusCode;
+    if (status === 401 || status === 403) {
+      throw new Error('HydraDB rejected HYDRA_DB_API_KEY. Check the key in .env.');
+    }
+    if (status === 404 || status === 400) {
+      throw new Error(
+        `HydraDB database "${config.hydra.database}" does not exist. Create it first:\n  node src/index.ts bootstrap`,
+      );
+    }
+    throw err;
+  }
+  if (!res.data?.infra?.readyForIngestion) {
+    throw new Error(
+      `HydraDB database "${config.hydra.database}" is not ready for ingestion yet.\n  node src/index.ts bootstrap`,
+    );
+  }
+}
+
 export async function waitForDatabaseReady(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   let wait = 2000;
@@ -93,7 +116,7 @@ export async function ingestKnowledge(sources: KnowledgeSource[]): Promise<strin
       sources.map((source) => ({
         ...source,
         database: config.hydra.database,
-        collection: config.hydra.collection,
+        ...(config.hydra.collection ? { collection: config.hydra.collection } : {}),
       })),
     ),
   });

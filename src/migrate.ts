@@ -89,6 +89,22 @@ function warnOnce(key: string, message: string): void {
   console.warn(`  ! ${message}`);
 }
 
+const reported = new Set<string>();
+async function fail(
+  table: string,
+  pk: string | null,
+  stage: 'transform' | 'load' | 'verify',
+  error: string,
+  payload?: unknown,
+): Promise<void> {
+  const key = `${table}:${stage}`;
+  if (!reported.has(key)) {
+    reported.add(key);
+    console.error(`  x ${table} [${stage}] ${error.split('\n').slice(0, 6).join(' ').slice(0, 600)}`);
+  }
+  await recordFailure(table, pk, stage, error, payload);
+}
+
 function usableFks(meta: TableMeta, metas: Map<string, TableMeta>, includeSelf: boolean) {
   const ignored = new Set(configFor(meta.table).ignoreFks ?? []);
   return meta.fks.filter((fk) => {
@@ -248,13 +264,7 @@ async function prepare(
       }
     } catch (err) {
       stats.failed++;
-      await recordFailure(
-        meta.table,
-        pk,
-        'transform',
-        err instanceof Error ? err.message : String(err),
-        row,
-      );
+      await fail(meta.table, pk, 'transform', err instanceof Error ? err.message : String(err), row);
     }
   }
   return prepared;
@@ -273,7 +283,7 @@ async function load(meta: TableMeta, prepared: Prepared[], stats: Stats): Promis
       return { items, ok: true as const };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      for (const item of items) await recordFailure(meta.table, item.pk, 'load', message);
+      for (const item of items) await fail(meta.table, item.pk, 'load', message);
       stats.failed += items.length;
       return { items, ok: false as const };
     }
@@ -286,7 +296,7 @@ async function load(meta: TableMeta, prepared: Prepared[], stats: Stats): Promis
     const { indexed, failed } = await waitForIndexing([...byId.keys()]);
     for (const [id, reason] of failed) {
       const item = byId.get(id);
-      if (item) await recordFailure(meta.table, item.pk, 'verify', reason);
+      if (item) await fail(meta.table, item.pk, 'verify', reason);
     }
     stats.failed += failed.size;
     accepted = indexed.map((id) => byId.get(id)).filter((item): item is Prepared => !!item);
@@ -350,10 +360,12 @@ async function migrateTable(
     if (!rows.length) break;
     stats.read += rows.length;
 
+    const before = stats.loaded + stats.skipped;
     await processRows(meta, metas, rows, false, !!options.dryRun, stats);
+    const accepted = stats.loaded + stats.skipped - before;
 
     lastPk = String(rows[rows.length - 1]?.[meta.pk]);
-    if (!options.dryRun) await setCheckpoint(meta.table, lastPk, rows.length);
+    if (!options.dryRun) await setCheckpoint(meta.table, lastPk, accepted);
     console.log(`  ${meta.table}: ${summary(stats)}`);
     if (config.batchDelayMs) await sleep(config.batchDelayMs);
   }
@@ -475,7 +487,7 @@ async function syncDeletes(meta: TableMeta, options: RunOptions): Promise<Stats>
         stats.deleted += group.length;
       } catch (err) {
         stats.failed += group.length;
-        await recordFailure(
+        await fail(
           meta.table,
           null,
           'load',

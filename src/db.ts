@@ -303,6 +303,21 @@ export async function openFailures(): Promise<{ source_table: string; stage: str
   );
 }
 
+export async function recentFailures(
+  limit: number,
+): Promise<
+  { source_table: string; source_pk: string | null; stage: string; error: string; failed_at: Date }[]
+> {
+  return q(
+    `SELECT source_table, source_pk, stage, error, failed_at
+       FROM migration_meta.failures
+      WHERE NOT resolved
+      ORDER BY failed_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+}
+
 export async function failedPks(table: string): Promise<string[]> {
   const rows = await q<{ source_pk: string }>(
     `SELECT DISTINCT source_pk FROM migration_meta.failures

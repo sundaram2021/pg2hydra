@@ -6,12 +6,13 @@ import {
   countRows,
   explainConnectionError,
   openFailures,
+  recentFailures,
   planTables,
   pool,
   progress,
   syncState,
 } from './db.ts';
-import { createDatabase, waitForDatabaseReady } from './hydra.ts';
+import { assertDatabaseReady, createDatabase, waitForDatabaseReady } from './hydra.ts';
 import { METADATA_SCHEMA } from './mapping.ts';
 import { migrate, redrive, sync, watch } from './migrate.ts';
 
@@ -25,6 +26,7 @@ Usage
   pg2hydra sync [options]       Incremental pass: changed rows + deletes
   pg2hydra redrive [options]    Retry dead-lettered rows
   pg2hydra status               Per-table progress, sync watermarks, open failures
+  pg2hydra failures             Show recent failures with their error messages
 
 Options
   -t, --table <name>   Restrict to a table (repeatable). Default: TABLES env or all
@@ -87,12 +89,14 @@ async function main(): Promise<void> {
 
     case 'migrate': {
       assertConfig();
+      await assertDatabaseReady();
       await migrate({ tables, dryRun: values['dry-run'], restart: values.restart });
       break;
     }
 
     case 'sync': {
       assertConfig();
+      await assertDatabaseReady();
       const options = { tables, dryRun: values['dry-run'] };
       if (values.watch) await watch(options);
       else await sync(options);
@@ -101,7 +105,21 @@ async function main(): Promise<void> {
 
     case 'redrive': {
       assertConfig();
+      await assertDatabaseReady();
       await redrive(tables);
+      break;
+    }
+
+    case 'failures': {
+      assertConfig(false);
+      const rows = await recentFailures(20);
+      if (!rows.length) console.log('no open failures');
+      for (const row of rows) {
+        console.log(
+          `\n${row.source_table} [${row.stage}]${row.source_pk ? ` pk=${row.source_pk}` : ''} ${row.failed_at.toISOString()}`,
+        );
+        console.log(row.error);
+      }
       break;
     }
 
