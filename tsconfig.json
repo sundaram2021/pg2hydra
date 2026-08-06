@@ -1,20 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
-    "outDir": "dist",
-    "rootDir": "src",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "declaration": false,
-    "sourceMap": true,
-    "skipLibCheck": true,
-    "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": true,
-    "erasableSyntaxOnly": true,
-    "verbatimModuleSyntax": true
+    "target": "ES2022", // Use modern JS features supported by latest Node
+    "module": "NodeNext", // Modern Node.js module resolution strategy
+    "moduleResolution": "NodeNext", // Required when using NodeNext module format
+    "lib": ["ES2022"], // Use modern global API types
+    "types": ["node"], // Include Node.js globals like console
+    "outDir": "./dist", // Compilation destination directory
+    "rootDir": "./src", // Source file location
+    "strict": true, // Enable all strict type-checking options
+    "esModuleInterop": true, // Ensures compatibility with CommonJS modules
+    "skipLibCheck": true, // Speeds up compilation by skipping declaration files
+    "forceConsistentCasingInFileNames": true // Disallows mismatched casing imports
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*"], // Compile everything inside src
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
 }
