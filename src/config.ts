@@ -60,6 +60,8 @@ export const config = {
   maxRetries: num('MAX_RETRIES', 6),
   requestTimeoutSeconds: num('REQUEST_TIMEOUT_SECONDS', 60),
   bootstrapTimeoutMs: num('BOOTSTRAP_TIMEOUT_MS', 300_000),
+  bootstrapPollMs: num('BOOTSTRAP_POLL_MS', 5_000),
+  skipPreflight: (process.env.HYDRA_SKIP_PREFLIGHT ?? 'false') === 'true',
   verify: (process.env.VERIFY ?? 'true') !== 'false',
   verifyTimeoutMs: num('VERIFY_TIMEOUT_MS', 300_000),
 

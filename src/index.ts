@@ -12,7 +12,13 @@ import {
   progress,
   syncState,
 } from './db.ts';
-import { assertDatabaseReady, createDatabase, waitForDatabaseReady } from './hydra.ts';
+import {
+  assertDatabaseReady,
+  createDatabase,
+  databaseSnapshot,
+  describeSnapshot,
+  waitForDatabaseReady,
+} from './hydra.ts';
 import { METADATA_SCHEMA } from './mapping.ts';
 import { migrate, redrive, sync, watch } from './migrate.ts';
 
@@ -33,6 +39,7 @@ Options
       --dry-run        Extract + transform only, no writes
       --restart        Reset checkpoints and re-scan (content hashes skip unchanged rows)
       --watch          (sync) Keep running every SYNC_INTERVAL_SECONDS
+      --no-wait        (bootstrap) Create the database and exit without polling
 `;
 
 async function main(): Promise<void> {
@@ -43,6 +50,7 @@ async function main(): Promise<void> {
       'dry-run': { type: 'boolean', default: false },
       restart: { type: 'boolean', default: false },
       watch: { type: 'boolean', default: false },
+      'no-wait': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -58,10 +66,32 @@ async function main(): Promise<void> {
   switch (command) {
     case 'bootstrap': {
       assertConfig();
-      await createDatabase(METADATA_SCHEMA);
-      console.log(`HydraDB database "${config.hydra.database}" requested`);
-      const ready = await waitForDatabaseReady(config.bootstrapTimeoutMs);
-      if (!ready) throw new Error('database did not become ready before BOOTSTRAP_TIMEOUT_MS');
+      const existing = await databaseSnapshot();
+      if (existing.ready) {
+        console.log(`HydraDB database "${config.hydra.database}" is already ready for ingestion`);
+        break;
+      }
+      if (existing.missing) {
+        await createDatabase(METADATA_SCHEMA);
+        console.log(`HydraDB database "${config.hydra.database}" requested`);
+      }
+      if (values['no-wait']) {
+        console.log('not waiting (--no-wait)');
+        break;
+      }
+      console.log(
+        `waiting up to ${Math.round(config.bootstrapTimeoutMs / 1000)}s, polling every ${Math.round(config.bootstrapPollMs / 1000)}s`,
+      );
+      const snapshot = await waitForDatabaseReady(config.bootstrapTimeoutMs, (poll, elapsed) => {
+        console.log(`  [${String(Math.round(elapsed / 1000)).padStart(4)}s] ${describeSnapshot(poll)}`);
+      });
+      if (!snapshot.ready) {
+        console.error(`\nstill not ready after ${Math.round(config.bootstrapTimeoutMs / 1000)}s.`);
+        console.error(`last status: ${JSON.stringify(snapshot.raw)}`);
+        throw new Error(
+          'database did not become ready. Raise BOOTSTRAP_TIMEOUT_MS, or run migrate with HYDRA_SKIP_PREFLIGHT=true to try ingesting anyway.',
+        );
+      }
       console.log('database ready for ingestion');
       break;
     }

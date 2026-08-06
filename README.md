@@ -35,9 +35,26 @@ The seed schema (`sql/seed.sql`) is deliberately shaped to exercise the engine: 
 FKs, a junction table, a self-referencing `employees.manager_id`, a per-user table that maps
 to Memories, and an `audit_log` that is skipped.
 
-`bootstrap` must run before the first migrate. HydraDB provisions a database asynchronously,
-so it calls `databases.create` (tolerating 409 if it already exists) and then polls
-`databases.status` until `infra.readyForIngestion` is true.
+`bootstrap` must run before the first migrate, because HydraDB provisions a database
+asynchronously. It creates the database if missing, then polls `databases.status` and prints
+each poll so you can see what it is waiting on:
+
+```
+HydraDB database "pg2hydra_demo" requested
+waiting up to 300s, polling every 5s
+  [   0s] graph=pending knowledge=pending memories=pending scheduler=pending readyForIngestion=pending
+  [   5s] graph=ok knowledge=ok memories=pending scheduler=pending readyForIngestion=pending
+  [  10s] graph=ok knowledge=ok memories=ok scheduler=pending readyForIngestion=pending
+database ready for ingestion
+```
+
+Readiness means the graph store and both vector stores are healthy. The API's own
+`readyForIngestion` flag also requires the sync scheduler, which stays `false` on databases
+that use no connectors — waiting on it alone can block forever, so it is treated as a
+sufficient signal, never a necessary one.
+
+Escape hatches: `bootstrap --no-wait` creates the database and exits, and
+`HYDRA_SKIP_PREFLIGHT=true` lets `migrate` run without the readiness check.
 
 Then keep it current:
 

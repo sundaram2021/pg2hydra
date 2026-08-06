@@ -71,7 +71,18 @@ export async function createDatabase(schema: MetadataField[]): Promise<void> {
   }
 }
 
-export async function assertDatabaseReady(): Promise<void> {
+export type InfraSnapshot = {
+  ready: boolean;
+  missing: boolean;
+  scheduler?: boolean;
+  graph?: boolean;
+  knowledge?: boolean;
+  memories?: boolean;
+  reportedReady?: boolean;
+  raw: unknown;
+};
+
+export async function databaseSnapshot(): Promise<InfraSnapshot> {
   let res;
   try {
     res = await hydra().databases.status({ database: config.hydra.database });
@@ -80,30 +91,69 @@ export async function assertDatabaseReady(): Promise<void> {
     if (status === 401 || status === 403) {
       throw new Error('HydraDB rejected HYDRA_DB_API_KEY. Check the key in .env.');
     }
-    if (status === 404 || status === 400) {
-      throw new Error(
-        `HydraDB database "${config.hydra.database}" does not exist. Create it first:\n  node src/index.ts bootstrap`,
-      );
+    if (status === 404) {
+      return { ready: false, missing: true, raw: (err as { body?: unknown }).body };
     }
     throw err;
   }
-  if (!res.data?.infra?.readyForIngestion) {
-    throw new Error(
-      `HydraDB database "${config.hydra.database}" is not ready for ingestion yet.\n  node src/index.ts bootstrap`,
-    );
-  }
+
+  const infra = res.data?.infra;
+  const vector = infra?.vectorstoreStatus;
+  const stores = infra?.graphStatus === true && vector?.knowledge === true && vector?.memories === true;
+
+  return {
+    ready: infra?.readyForIngestion === true || stores,
+    missing: false,
+    scheduler: infra?.schedulerStatus,
+    graph: infra?.graphStatus,
+    knowledge: vector?.knowledge,
+    memories: vector?.memories,
+    reportedReady: infra?.readyForIngestion,
+    raw: res.data,
+  };
 }
 
-export async function waitForDatabaseReady(timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  let wait = 2000;
-  while (Date.now() < deadline) {
-    const res = await hydra().databases.status({ database: config.hydra.database });
-    if (res.data?.infra?.readyForIngestion) return true;
-    await sleep(wait);
-    wait = Math.min(10_000, Math.round(wait * 1.5));
+export function describeSnapshot(snapshot: InfraSnapshot): string {
+  if (snapshot.missing) return 'database not found yet';
+  const flag = (value: boolean | undefined) => (value === undefined ? '?' : value ? 'ok' : 'pending');
+  return (
+    `graph=${flag(snapshot.graph)} knowledge=${flag(snapshot.knowledge)} ` +
+    `memories=${flag(snapshot.memories)} scheduler=${flag(snapshot.scheduler)} ` +
+    `readyForIngestion=${flag(snapshot.reportedReady)}`
+  );
+}
+
+export async function assertDatabaseReady(): Promise<void> {
+  if (config.skipPreflight) return;
+  const snapshot = await databaseSnapshot();
+  if (snapshot.ready) return;
+
+  if (snapshot.missing) {
+    throw new Error(
+      `HydraDB database "${config.hydra.database}" does not exist. Create it first:\n  node src/index.ts bootstrap`,
+    );
   }
-  return false;
+  throw new Error(
+    `HydraDB database "${config.hydra.database}" is not ready: ${describeSnapshot(snapshot)}\n` +
+      'Run "node src/index.ts bootstrap" to wait for it, or set HYDRA_SKIP_PREFLIGHT=true to ingest anyway.',
+  );
+}
+
+export async function waitForDatabaseReady(
+  timeoutMs: number,
+  onPoll: (snapshot: InfraSnapshot, elapsedMs: number) => void,
+): Promise<InfraSnapshot> {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let snapshot = await databaseSnapshot();
+  onPoll(snapshot, 0);
+
+  while (!snapshot.ready && Date.now() < deadline) {
+    await sleep(config.bootstrapPollMs);
+    snapshot = await databaseSnapshot();
+    onPoll(snapshot, Date.now() - startedAt);
+  }
+  return snapshot;
 }
 
 export async function ingestKnowledge(sources: KnowledgeSource[]): Promise<string[]> {
