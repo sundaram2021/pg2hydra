@@ -64,13 +64,34 @@ export type RowBatch = {
   rows: Record<string, unknown>[];
 };
 
-export type HydraSource = {
+export type Layer = 'knowledge' | 'episode' | 'memory';
+
+export type TablePlan = {
+  table: TableObject;
+  layer: Layer;
+  time_column: string | null;
+  entity: string;
+};
+
+export type Rendered = {
+  key: string;
+  text: string;
+  time: string | null;
+};
+
+export type HydraDocument = {
   id: string;
-  title: string;
-  type: string;
-  timestamp: string;
-  content: { markdown: string };
-  tenant_metadata: Record<string, string>;
+  filename: string;
+  text: string;
+  metadata: Record<string, string>;
   additional_metadata: Record<string, unknown>;
-  relations: { ids: string[]; properties?: Record<string, unknown> };
+  relations: string[];
+};
+
+export type HydraMemory = {
+  id: string;
+  collection: string;
+  text: string;
+  metadata: Record<string, string>;
+  additional_metadata: Record<string, unknown>;
 };

@@ -2,13 +2,14 @@ import { config } from '../config.ts';
 import { query, quoteIdent } from './client.ts';
 import type { RowBatch, TableObject } from '../types.ts';
 
-function orderClause(table: TableObject): string {
+function orderClause(table: TableObject, orderBy?: string | null): string {
   const keys =
     table.primary_key.length > 0
       ? table.primary_key
       : table.columns.slice(0, 1).map((column) => column.name);
-  if (keys.length === 0) return '';
-  return ` ORDER BY ${keys.map(quoteIdent).join(', ')}`;
+  const columns = orderBy ? [orderBy, ...keys] : keys;
+  if (columns.length === 0) return '';
+  return ` ORDER BY ${columns.map(quoteIdent).join(', ')}`;
 }
 
 export async function countRows(table: TableObject): Promise<number> {
@@ -20,9 +21,10 @@ export async function countRows(table: TableObject): Promise<number> {
 
 export async function* readBatches(
   table: TableObject,
+  orderBy?: string | null,
 ): AsyncGenerator<RowBatch> {
   const target = `${quoteIdent(table.schema)}.${quoteIdent(table.table)}`;
-  const order = orderClause(table);
+  const order = orderClause(table, orderBy);
   let offset = 0;
   let index = 0;
 

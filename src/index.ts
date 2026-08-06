@@ -5,116 +5,132 @@ import { closePg } from './pg/client.ts';
 import { introspect } from './pg/introspect.ts';
 import { buildTableObjects } from './pg/relations.ts';
 import { countRows, readBatches } from './pg/rows.ts';
-import { batchSource, schemaSource } from './transform/source.ts';
-import { toObject } from './transform/object.ts';
-import { renderBatch } from './transform/record.ts';
+import { planTables } from './classify.ts';
+import { renderFor } from './transform/records.ts';
+import { packDocuments } from './transform/pack.ts';
+import { memoryItem, ontologyDocument } from './transform/source.ts';
 import { createClient, ensureDatabase, waitIndexed } from './hydra/client.ts';
-import { ingestSources } from './hydra/ingest.ts';
+import { uploadDocuments } from './hydra/upload.ts';
+import { uploadMemories } from './hydra/memories.ts';
 import { verify } from './hydra/verify.ts';
 import type { Hydra } from './hydra/client.ts';
-import type { HydraSource, TableObject } from './types.ts';
+import type { HydraDocument, HydraMemory, TablePlan } from './types.ts';
 
-async function loadTables(): Promise<TableObject[]> {
-  const shapes = await introspect();
-  const tables = await buildTableObjects(shapes);
+async function loadPlans(): Promise<TablePlan[]> {
+  const tables = await buildTableObjects(await introspect());
   for (const table of tables) table.row_count = await countRows(table);
+  const plans = planTables(tables);
   log.done(
-    `introspected ${tables.length} relations in schema ${config.pgSchema}`,
+    `introspected ${plans.length} relations in schema ${config.pgSchema}`,
   );
-  for (const table of tables) {
-    const relations = table.relations;
+  for (const plan of plans)
     log.info(
-      `${table.qualified_name} [${table.kind}] rows=${table.row_count} pk=(${table.primary_key.join(', ') || 'none'})` +
-        `${table.composite_key ? ' composite' : ''} m2o=${relations.many_to_one.length} o2m=${relations.one_to_many.length} m2m=${relations.many_to_many.length}`,
+      `${plan.table.qualified_name} [${plan.table.kind}] rows=${plan.table.row_count} -> ${plan.layer}` +
+        `${plan.time_column ? ` on ${plan.time_column}` : ''}`,
     );
-  }
-  return tables;
+  return plans;
 }
 
-async function dryRun(tables: TableObject[]): Promise<void> {
+async function buildForTable(
+  plan: TablePlan,
+): Promise<{ documents: HydraDocument[]; memories: HydraMemory[] }> {
+  const documents: HydraDocument[] = [];
+  const memories: HydraMemory[] = [];
+  let index = 0;
+  let offset = 0;
+
+  for await (const batch of readBatches(plan.table, plan.time_column)) {
+    const records = batch.rows.map((row) => renderFor(plan, row));
+    if (plan.layer === 'memory' && config.migrateMemories) {
+      for (const record of records) memories.push(memoryItem(plan, record));
+      continue;
+    }
+    const packed = packDocuments(plan, records, index, offset);
+    documents.push(...packed);
+    index += packed.length;
+    offset += records.length;
+  }
+
+  return { documents, memories };
+}
+
+async function dryRun(plans: TablePlan[]): Promise<void> {
   mkdirSync('out', { recursive: true });
-  for (const table of tables) {
-    writeFileSync(
-      `out/${table.table}.object.json`,
-      JSON.stringify(toObject(table), null, 2),
-    );
-    for await (const batch of readBatches(table)) {
+  for (const plan of plans) {
+    const ontology = ontologyDocument(plan);
+    writeFileSync(`out/${ontology.filename}`, ontology.text);
+    const { documents, memories } = await buildForTable(plan);
+    if (documents[0])
+      writeFileSync(`out/${documents[0].filename}`, documents[0].text);
+    if (memories[0])
       writeFileSync(
-        `out/${table.table}.rows.sample.md`,
-        renderBatch({ ...batch, rows: batch.rows.slice(0, 3) }),
+        `out/${plan.table.qualified_name} (memory sample).md`,
+        memories[0].text,
       );
-      break;
-    }
+    log.info(
+      `${plan.table.qualified_name}: ${documents.length} documents, ${memories.length} memories`,
+    );
   }
-  log.done(
-    `dry run complete, wrote ${tables.length} table objects and row samples to ./out`,
-  );
+  log.done('dry run complete, inspect ./out');
 }
 
-async function migrateRows(
-  client: Hydra,
-  tables: TableObject[],
-): Promise<string[]> {
-  const flushSize = Math.max(1, config.uploadChunk * config.concurrency);
-  const ingested: string[] = [];
+async function migrate(client: Hydra, plans: TablePlan[]): Promise<void> {
+  log.step('migrating table ontology');
+  const ontology = await uploadDocuments(
+    client,
+    plans.map(ontologyDocument),
+    'ontology',
+  );
+  await waitIndexed(client, ontology.ids);
 
-  for (const table of tables) {
-    let buffer: HydraSource[] = [];
-    let batches = 0;
+  log.step('migrating rows as knowledge and episodes');
+  const documentIds: string[] = [];
+  let edges = ontology.edges;
+  const allMemories: HydraMemory[] = [];
 
-    const flush = async (): Promise<void> => {
-      if (buffer.length === 0) return;
-      const ids = await ingestSources(client, buffer, `${table.table} rows`);
-      ingested.push(...ids);
-      buffer = [];
-    };
-
-    for await (const batch of readBatches(table)) {
-      buffer.push(batchSource(batch));
-      batches += 1;
-      if (buffer.length >= flushSize) await flush();
-    }
-    await flush();
+  for (const plan of plans) {
+    const { documents, memories } = await buildForTable(plan);
+    allMemories.push(...memories);
+    if (documents.length === 0) continue;
+    const result = await uploadDocuments(client, documents, plan.table.table);
+    documentIds.push(...result.ids);
+    edges += result.edges;
     log.done(
-      `${table.qualified_name}: migrated ${table.row_count} rows in ${batches} batches`,
+      `${plan.table.qualified_name}: ${documents.length} ${plan.layer} documents from ${plan.table.row_count} rows`,
+    );
+  }
+  await waitIndexed(client, documentIds);
+
+  if (allMemories.length > 0) {
+    log.step('migrating entity rows as memories');
+    const memoryIds = await uploadMemories(client, allMemories, 'memories');
+    log.done(
+      `stored ${memoryIds.length} memories across ${memoryIds.length} collections`,
     );
   }
 
-  return ingested;
+  log.done(
+    `migration complete: ${ontology.ids.length} ontology, ${documentIds.length} record documents, ${allMemories.length} memories, ${edges} graph edges`,
+  );
 }
 
 async function main(): Promise<void> {
-  const tables = await loadTables();
-  if (tables.length === 0)
+  const plans = await loadPlans();
+  if (plans.length === 0)
     throw new Error(`no tables found in schema ${config.pgSchema}`);
 
   if (config.dryRun) {
-    await dryRun(tables);
+    await dryRun(plans);
     return;
   }
 
   const client = createClient();
   await ensureDatabase(client);
-
-  log.step('migrating table objects (schema + relationship graph)');
-  const schemaIds = await ingestSources(
-    client,
-    tables.map(schemaSource),
-    'table objects',
-  );
-  await waitIndexed(client, schemaIds);
-
-  log.step('migrating rows in batches');
-  const rowIds = await migrateRows(client, tables);
-  await waitIndexed(client, rowIds);
-
-  log.done(
-    `migration complete: ${schemaIds.length} table objects, ${rowIds.length} row batches`,
-  );
+  await migrate(client, plans);
 
   if (config.verify) {
     log.step('verifying retrieval and graph');
-    await verify(client, tables);
+    await verify(client, plans);
   }
 }
 
