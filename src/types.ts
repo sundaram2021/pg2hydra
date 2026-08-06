@@ -3,7 +3,6 @@ export type Column = {
   data_type: string;
   nullable: boolean;
   default: string | null;
-  position: number;
 };
 
 export type ManyToOne = {
@@ -38,7 +37,6 @@ export type TableShape = {
   composite_key: boolean;
   unique_keys: string[][];
   view_definition: string | null;
-  estimated_rows: number;
 };
 
 export type Relations = {
@@ -50,18 +48,10 @@ export type Relations = {
 };
 
 export type TableObject = TableShape & {
-  id: string;
   qualified_name: string;
   relations: Relations;
   related_tables: string[];
   row_count: number | null;
-};
-
-export type RowBatch = {
-  table: TableObject;
-  index: number;
-  offset: number;
-  rows: Record<string, unknown>[];
 };
 
 export type Layer = 'knowledge' | 'episode' | 'memory';
@@ -74,6 +64,7 @@ export type TablePlan = {
 };
 
 export type Rendered = {
+  id: string;
   key: string;
   text: string;
   time: string | null;

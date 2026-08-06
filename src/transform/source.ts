@@ -40,8 +40,8 @@ export function ontologyDocument(plan: TablePlan): HydraDocument {
 export function memoryItem(plan: TablePlan, record: Rendered): HydraMemory {
   const { table } = plan;
   return {
-    id: `pg::${table.qualified_name}::memory::${record.key.split('/')[1]}`,
-    collection: `${table.table}:${record.key.split('/')[1]}`,
+    id: `pg::${table.qualified_name}::memory::${record.id}`,
+    collection: `${table.table}:${record.id}`,
     text: record.text,
     metadata: {
       pg_schema: table.schema,

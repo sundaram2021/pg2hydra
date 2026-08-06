@@ -54,12 +54,13 @@ function looksLikePerson(table: TableObject): boolean {
 }
 
 function chosenLayer(table: TableObject, time: string | null): Layer {
+  if (table.primary_key.length === 0) return 'knowledge';
   if (config.memoryTables.includes(table.table)) return 'memory';
   if (config.episodeTables.includes(table.table)) return 'episode';
   if (config.memoryTables.length > 0 || config.episodeTables.length > 0)
     return 'knowledge';
   if (table.kind === 'view') return 'knowledge';
-  if (looksLikePerson(table)) return 'memory';
+  if (table.primary_key.length > 0 && looksLikePerson(table)) return 'memory';
   if (time && table.primary_key.length > 0) return 'episode';
   return 'knowledge';
 }

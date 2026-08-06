@@ -29,7 +29,7 @@ export function renderRecord(
   const text = detail
     ? `${label} - ${detail}.${links}`
     : `${label}${links ? ` links${links.replace(' Belongs to', '')}` : ' has no additional fields.'}`;
-  return { key: label, text, time: null };
+  return { id: key, key: label, text, time: null };
 }
 
 export function renderEpisode(
@@ -49,7 +49,7 @@ export function renderEpisode(
   );
   const when = time ? `On ${readableDate(time)}, ` : '';
   const text = `${when}${label} was recorded${detail ? ` with ${detail}` : ''}.${belongsTo(plan, row)}`;
-  return { key: label, text, time };
+  return { id: key, key: label, text, time };
 }
 
 export function renderMemory(
@@ -65,7 +65,7 @@ export function renderMemory(
     table.primary_key,
   );
   const text = `${label} is a ${plan.entity} in the ${table.schema} dataset. Known details: ${detail || 'none recorded'}.${belongsTo(plan, row)}`;
-  return { key: label, text, time: null };
+  return { id: key, key: label, text, time: null };
 }
 
 export function renderFor(
