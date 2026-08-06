@@ -42,7 +42,6 @@ function list(key: string): string[] {
 export const config = {
   databaseUrl: process.env.DATABASE_URL ?? '',
   schema: process.env.PG_SCHEMA ?? 'public',
-  forceIpv4: (process.env.PG_FORCE_IPV4 ?? 'false') === 'true',
 
   hydra: {
     baseUrl: (process.env.HYDRA_BASE_URL ?? 'https://api.hydradb.com').replace(/\/$/, ''),
@@ -59,6 +58,8 @@ export const config = {
 
   requestDelayMs: Number(process.env.REQUEST_DELAY_MS ?? 1000) || 0,
   maxRetries: num('MAX_RETRIES', 6),
+  requestTimeoutSeconds: num('REQUEST_TIMEOUT_SECONDS', 60),
+  bootstrapTimeoutMs: num('BOOTSTRAP_TIMEOUT_MS', 300_000),
   verify: (process.env.VERIFY ?? 'true') !== 'false',
   verifyTimeoutMs: num('VERIFY_TIMEOUT_MS', 300_000),
 

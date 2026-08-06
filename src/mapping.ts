@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Row, TableMeta } from './db.ts';
+import type { MetadataField } from './hydra.ts';
 
 export type Target =
   | 'knowledge'
@@ -25,30 +26,57 @@ export type TableConfig = {
 export const TABLES: Record<string, TableConfig> = {
   customers: {
     target: 'knowledge',
-    text: (r) => `Customer ${r.name}, email ${r.email}, joined ${r.created_at}`,
+    title: (r) => `Customer ${r.name}`,
+    text: (r) => `Customer ${r.name} (${r.email}), ${r.tier} tier, joined ${r.created_at}`,
+    metadata: (r) => ({ tier: r.tier }),
+  },
+  products: {
+    target: 'knowledge',
+    title: (r) => `Product ${r.name}`,
+    text: (r) =>
+      `Product ${r.name} in category ${r.category}, priced ${Number(r.price_cents) / 100}`,
+    metadata: (r) => ({ category: r.category }),
+  },
+  employees: {
+    target: 'knowledge',
+    title: (r) => `Employee ${r.name}`,
+    text: (r) => `Employee ${r.name}, role ${r.role}`,
   },
   orders: {
     target: 'knowledge',
+    title: (r) => `Order #${r.id}`,
     text: (r) =>
-      `Order #${r.id}: ${r.item_count} items, status ${r.status}, placed ${r.created_at}`,
-    metadata: (r) => ({ status: r.status, total: r.total }),
+      `Order #${r.id}: ${r.item_count} items totalling ${Number(r.total_cents) / 100}, ` +
+      `status ${r.status}, placed ${r.created_at}`,
+    metadata: (r) => ({ status: r.status }),
   },
   order_items: {
     target: 'knowledge',
+    title: (r) => `Line item ${r.id}`,
     text: (r) => `${r.qty}x ${r.product_name} in order #${r.order_id}`,
   },
   user_preferences: {
     target: 'memory',
     userIdColumn: 'user_id',
+    title: (r) => `Preference: ${r.key}`,
     text: (r) => `User preference: ${r.key} = ${r.value}`,
   },
+  audit_log: { target: 'skip' },
 };
 
 export const RELATION_LABELS: Record<string, string> = {
   'orders.customer_id': 'belongs_to_customer',
+  'orders.handled_by': 'handled_by_employee',
   'order_items.order_id': 'part_of_order',
   'order_items.product_id': 'references_product',
+  'employees.manager_id': 'reports_to',
 };
+
+export const METADATA_SCHEMA: MetadataField[] = [
+  { name: 'tier', dataType: 'VARCHAR', maxLength: 64, enableMatch: true },
+  { name: 'category', dataType: 'VARCHAR', maxLength: 128, enableMatch: true },
+  { name: 'status', dataType: 'VARCHAR', maxLength: 64, enableMatch: true },
+];
 
 export const configFor = (table: string): TableConfig => TABLES[table] ?? {};
 

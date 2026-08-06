@@ -11,11 +11,14 @@ import {
   progress,
   syncState,
 } from './db.ts';
+import { createDatabase, waitForDatabaseReady } from './hydra.ts';
+import { METADATA_SCHEMA } from './mapping.ts';
 import { migrate, redrive, sync, watch } from './migrate.ts';
 
-const USAGE = `pg2hydra — Supabase Postgres -> HydraDB migration engine
+const USAGE = `pg2hydra — Postgres -> HydraDB migration engine
 
 Usage
+  pg2hydra bootstrap            Create the HydraDB database and wait until it is ready
   pg2hydra init                 Create the migration_meta bookkeeping schema
   pg2hydra plan                 Print the FK-ordered table plan
   pg2hydra migrate [options]    Run the backfill (resumable, idempotent)
@@ -51,6 +54,16 @@ async function main(): Promise<void> {
   }
 
   switch (command) {
+    case 'bootstrap': {
+      assertConfig();
+      await createDatabase(METADATA_SCHEMA);
+      console.log(`HydraDB database "${config.hydra.database}" requested`);
+      const ready = await waitForDatabaseReady(config.bootstrapTimeoutMs);
+      if (!ready) throw new Error('database did not become ready before BOOTSTRAP_TIMEOUT_MS');
+      console.log('database ready for ingestion');
+      break;
+    }
+
     case 'init': {
       assertConfig(false);
       await applySchema();

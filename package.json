@@ -16,9 +16,13 @@
     "init": "npm run cli -- init",
     "plan": "npm run cli -- plan",
     "migrate": "npm run cli -- migrate",
-    "status": "npm run cli -- status"
+    "status": "npm run cli -- status",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down -v",
+    "bootstrap": "npm run cli -- bootstrap"
   },
   "dependencies": {
+    "@hydradb/sdk": "^2.1.2",
     "pg": "^8.13.1"
   },
   "devDependencies": {

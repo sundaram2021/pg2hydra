@@ -1,3 +1,4 @@
+import { HydraDB, HydraDBClient } from '@hydradb/sdk';
 import { config } from './config.ts';
 
 export type Relations = {
@@ -18,9 +19,6 @@ export type KnowledgeSource = {
   additional_metadata?: Record<string, unknown>;
   relations?: Relations;
   timestamp?: string;
-
-  database?: string;
-  collection?: string;
 };
 
 export type MemoryRecord = {
@@ -28,150 +26,92 @@ export type MemoryRecord = {
   title?: string;
   text: string;
   infer: boolean;
-
   metadata?: string;
   additional_metadata?: string;
   relations?: Relations;
 };
 
-export class HydraError extends Error {
-  status: number;
-  retryable: boolean;
-  requestId: string | undefined;
-  constructor(status: number, message: string, requestId?: string) {
-    super(`HydraDB ${status}: ${message}${requestId ? ` (request_id ${requestId})` : ''}`);
-    this.status = status;
-
-    this.retryable = status === 408 || status === 429 || status >= 500 || status === 0;
-    this.requestId = requestId;
-  }
-}
-
-type Envelope<T> = {
-  success?: boolean;
-  data?: T;
-  error?: unknown;
-  meta?: { request_id?: string };
-};
+export type MetadataField = HydraDB.TenantsCustomPropertyDefinition;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function headers(extra: Record<string, string> = {}): Record<string, string> {
+let client: HydraDBClient | undefined;
+
+export function hydra(): HydraDBClient {
+  if (!client) {
+    client = new HydraDBClient({
+      token: config.hydra.apiKey,
+      baseUrl: config.hydra.baseUrl,
+      maxRetries: config.maxRetries,
+      timeoutInSeconds: config.requestTimeoutSeconds,
+    });
+  }
+  return client;
+}
+
+async function pace(): Promise<void> {
+  if (config.requestDelayMs) await sleep(config.requestDelayMs);
+}
+
+function scope(): { database: string; collection?: string } {
   return {
-    authorization: `Bearer ${config.hydra.apiKey}`,
-    'api-version': '2',
-    ...extra,
+    database: config.hydra.database,
+    ...(config.hydra.collection ? { collection: config.hydra.collection } : {}),
   };
 }
 
-async function call<T>(
-  path: string,
-  init: { method: string; form?: FormData; json?: unknown; extraHeaders?: Record<string, string> },
-): Promise<T> {
-  const url = `${config.hydra.baseUrl}${path}`;
-  let last: HydraError | null = null;
-
-  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
-    if (attempt > 0) {
-      const backoff = Math.min(30_000, 500 * 2 ** (attempt - 1));
-      await sleep(backoff / 2 + Math.random() * backoff);
-    } else if (config.requestDelayMs) {
-      await sleep(config.requestDelayMs);
-    }
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: init.method,
-        headers: init.form
-          ? headers(init.extraHeaders)
-          : headers({ 'content-type': 'application/json', ...init.extraHeaders }),
-        body: init.form ?? (init.json === undefined ? undefined : JSON.stringify(init.json)),
-      });
-    } catch (err) {
-      last = new HydraError(0, err instanceof Error ? err.message : String(err));
-      continue;
-    }
-
-    const text = await res.text();
-    let parsed: Envelope<T> | undefined;
-    try {
-      parsed = text ? (JSON.parse(text) as Envelope<T>) : undefined;
-    } catch {
-      parsed = undefined;
-    }
-
-    if (res.ok) {
-      if (parsed && parsed.success === false) {
-        throw new HydraError(res.status, JSON.stringify(parsed.error), parsed.meta?.request_id);
-      }
-      return (parsed?.data ?? parsed ?? {}) as T;
-    }
-
-    last = new HydraError(
-      res.status,
-      parsed ? JSON.stringify(parsed.error ?? parsed) : text.slice(0, 500),
-      parsed?.meta?.request_id,
-    );
-    if (!last.retryable) throw last;
-
-    const retryAfter = Number(res.headers.get('retry-after'));
-    if (Number.isFinite(retryAfter) && retryAfter > 0) await sleep(retryAfter * 1000);
+export async function createDatabase(schema: MetadataField[]): Promise<void> {
+  try {
+    await hydra().databases.create({
+      database: config.hydra.database,
+      ...(schema.length ? { databaseMetadataSchema: schema } : {}),
+    });
+  } catch (err) {
+    if ((err as { statusCode?: number }).statusCode !== 409) throw err;
   }
-
-  throw last ?? new HydraError(0, 'request failed');
 }
 
-function scopeFields(form: FormData): void {
-  form.set('database', config.hydra.database);
-  if (config.hydra.collection) form.set('collection', config.hydra.collection);
-  form.set('upsert', 'true');
+export async function waitForDatabaseReady(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let wait = 2000;
+  while (Date.now() < deadline) {
+    const res = await hydra().databases.status({ database: config.hydra.database });
+    if (res.data?.infra?.readyForIngestion) return true;
+    await sleep(wait);
+    wait = Math.min(10_000, Math.round(wait * 1.5));
+  }
+  return false;
 }
 
 export async function ingestKnowledge(sources: KnowledgeSource[]): Promise<string[]> {
-  const form = new FormData();
-  scopeFields(form);
-  form.set('type', 'knowledge');
-  form.set(
-    'app_knowledge',
-    JSON.stringify(
+  await pace();
+  await hydra().context.ingest({
+    ...scope(),
+    type: 'knowledge',
+    upsert: 'true',
+    appKnowledge: JSON.stringify(
       sources.map((source) => ({
         ...source,
         database: config.hydra.database,
         collection: config.hydra.collection,
-
-        tenant_id: config.hydra.database,
-        sub_tenant_id: config.hydra.collection || config.hydra.database,
       })),
     ),
-  );
-  await call<unknown>('/context/ingest', { method: 'POST', form });
+  });
   return sources.map((source) => source.id);
 }
 
 export async function ingestMemories(memories: MemoryRecord[]): Promise<string[]> {
-  const form = new FormData();
-  scopeFields(form);
-  form.set('type', 'memory');
-  form.set(
-    'memories',
-    JSON.stringify(memories.map((memory) => ({ ...memory, source_id: memory.id }))),
-  );
-  await call<unknown>('/context/ingest', { method: 'POST', form });
+  await pace();
+  await hydra().context.ingest({
+    ...scope(),
+    type: 'memory',
+    upsert: 'true',
+    memories: JSON.stringify(memories.map((memory) => ({ ...memory, source_id: memory.id }))),
+  });
   return memories.map((memory) => memory.id);
 }
 
 export type IndexingState = 'pending' | 'indexed' | 'failed' | 'unknown';
-
-type StatusResponse = {
-  statuses?: {
-    id?: string;
-    file_id?: string;
-    indexing_status?: string;
-    error_code?: string;
-    error_message?: string;
-  }[];
-};
 
 function classify(status: string): IndexingState {
   switch (status.toLowerCase()) {
@@ -199,16 +139,12 @@ export async function fetchStatus(
   const out = new Map<string, { state: IndexingState; error: string }>();
   if (!ids.length) return out;
 
-  const query = new URLSearchParams({ database: config.hydra.database, ids: ids.join(',') });
-  if (config.hydra.collection) query.set('collection', config.hydra.collection);
-
-  const data = await call<StatusResponse>(`/context/status?${query}`, { method: 'GET' });
-  for (const row of data.statuses ?? []) {
-    const id = row.id ?? row.file_id;
-    if (!id) continue;
-    out.set(id, {
-      state: classify(row.indexing_status ?? ''),
-      error: [row.error_code, row.error_message].filter(Boolean).join(': '),
+  const res = await hydra().context.status({ ...scope(), ids });
+  for (const row of res.data?.statuses ?? []) {
+    if (!row.id) continue;
+    out.set(row.id, {
+      state: classify(row.indexingStatus ?? ''),
+      error: [row.errorCode, row.errorMessage].filter(Boolean).join(': '),
     });
   }
   return out;
@@ -224,8 +160,7 @@ export async function waitForIndexing(
   let wait = 1500;
 
   while (pending.size && Date.now() < deadline) {
-    const statuses = await fetchStatus([...pending]);
-    for (const [id, { state, error }] of statuses) {
+    for (const [id, { state, error }] of await fetchStatus([...pending])) {
       if (state === 'indexed') {
         indexed.push(id);
         pending.delete(id);
@@ -249,19 +184,13 @@ export async function deleteSources(
 ): Promise<number> {
   if (!ids.length) return 0;
   try {
-    const data = await call<{ deleted_count?: number }>('/context', {
-      method: 'DELETE',
-      json: {
-        database: config.hydra.database,
-        ...(config.hydra.collection ? { collection: config.hydra.collection } : {}),
-        ids,
-        type,
-      },
-      extraHeaders: { 'x-hydradb-delete-status': 'strict' },
-    });
-    return data.deleted_count ?? ids.length;
+    const res = await hydra().context.delete(
+      { ...scope(), ids, type },
+      { headers: { 'X-HydraDB-Delete-Status': 'strict' } },
+    );
+    return res.data?.deletedCount ?? ids.length;
   } catch (err) {
-    if (err instanceof HydraError && err.status === 404) return 0;
+    if ((err as { statusCode?: number }).statusCode === 404) return 0;
     throw err;
   }
 }

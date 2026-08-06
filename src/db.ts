@@ -1,9 +1,6 @@
 import pg from 'pg';
-import { setDefaultResultOrder } from 'node:dns';
 import { readFileSync } from 'node:fs';
 import { config } from './config.ts';
-
-if (config.forceIpv4) setDefaultResultOrder('ipv4first');
 
 export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
@@ -21,22 +18,16 @@ export function explainConnectionError(err: unknown): string | null {
     }
   })();
 
-  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') {
+  if (code === 'ECONNREFUSED') {
     return [
-      `Cannot reach the Postgres host${host ? ` (${host})` : ''} — no route to its address.`,
-      '',
-      "Supabase's direct connection host (db.<ref>.supabase.co) is IPv6-only, and many",
-      'networks (GitHub Codespaces, most CI runners, some corporate LANs) have no IPv6.',
-      '',
-      'Use the Supavisor pooler instead — it has an IPv4 address. In the Supabase dashboard:',
-      '  Project Settings -> Database -> Connection string -> Session pooler',
-      '',
-      'It looks like this (note the port, and the project ref inside the username):',
-      '  postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres',
-      '',
-      'Put that in DATABASE_URL. Prefer the session pooler on port 5432; the transaction',
-      'pooler on 6543 also works for this tool but drops session state between statements.',
+      `Nothing is listening on ${host || 'the Postgres host'}.`,
+      'Start the local database first:  docker compose up -d',
+      'Check it is healthy with:        docker compose ps',
     ].join('\n');
+  }
+
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') {
+    return `No route to ${host || 'the Postgres host'}. If this is a managed database on an IPv6-only hostname, use its IPv4 or pooler endpoint instead.`;
   }
 
   if (code === 'ENOTFOUND') {
@@ -44,11 +35,15 @@ export function explainConnectionError(err: unknown): string | null {
   }
 
   if (code === 'ETIMEDOUT') {
-    return `Timed out connecting to${host ? ` ${host}` : ' Postgres'}. Check the port and any IP allow-list on the database.`;
+    return `Timed out connecting to ${host || 'Postgres'}. Check the port and any firewall between you and the database.`;
+  }
+
+  if (code === '3D000') {
+    return 'That database does not exist. With docker compose the database is "appdb".';
   }
 
   if (code === '28P01') {
-    return 'Postgres rejected the credentials. With the Supabase pooler the username is postgres.<project-ref>, not plain postgres.';
+    return 'Postgres rejected the credentials in DATABASE_URL.';
   }
 
   return null;
