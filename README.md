@@ -1,124 +1,93 @@
 # pg2hydra
 
-Migration engine that turns a PostgreSQL database into an agent-ready context graph in [HydraDB](https://hydradb.com).
+Migrates a PostgreSQL database into [HydraDB](https://hydradb.com) as context an AI agent can read.
 
-Every table becomes one **table object** carrying its keys and relationships at the top level. Every row is JSON-stringified and nested inside batched row documents that point back at that object. HydraDB indexes both and builds the context graph from them.
-
-## How the mapping works
-
-| PostgreSQL                  | HydraDB                                             |
-| --------------------------- | --------------------------------------------------- |
-| table / view                | one knowledge source `pg::<schema>.<table>::object` |
-| rows                        | batched sources `pg::<schema>.<table>::rows::00000` |
-| primary key / composite key | top-level `primary_key`, `composite_key`            |
-| foreign key                 | `relations.many_to_one` + `relations.one_to_many`   |
-| junction table              | `relations.many_to_many`, `junction: true`          |
-| self reference              | `self_referencing: true`                            |
-| view                        | `kind: "view"` + `view_definition`                  |
-
-A table object looks like this:
-
-```json
-{
-  "id": "pg::public.order_items::object",
-  "qualified_name": "public.order_items",
-  "kind": "table",
-  "primary_key": ["order_id", "product_id"],
-  "composite_key": true,
-  "columns": [
-    { "name": "order_id", "data_type": "integer", "nullable": false }
-  ],
-  "relations": {
-    "many_to_one": [
-      { "columns": ["order_id"], "references_table": "public.orders" }
-    ],
-    "one_to_many": [],
-    "many_to_many": [
-      { "through": "public.order_items", "target_table": "public.products" }
-    ],
-    "junction": true
-  },
-  "related_tables": ["public.orders", "public.products"],
-  "row_count": 348
-}
-```
-
-Each row batch renders one entry per row, so the graph extractor sees both the literal record and the edge it participates in:
+Tables, rows and foreign keys become plain-language documents. One line per row, naming the record, its fields and the records it points at:
 
 ```
-## order_items/1-2
-{"order_id":1,"product_id":2,"quantity":2,"unit_cents":9901}
-order_id: 1; product_id: 2; quantity: 2; unit_cents: 9901
-order_items/1-2 belongs to orders/1 via order_id. order_items/1-2 belongs to products/2 via product_id.
+products/1 - sku: SKU-0001; name: Nimbus Headphones v1; price_cents: 10037; category_id: 4. Belongs to categories/4.
+On 2026-08-01 14:46:01Z, orders/120 was recorded with customer_id: 1; status: pending. Belongs to customers/1.
+product_tags/1-2 links products/1 and tags/2.
 ```
 
-## Graph formation
+## Architecture
 
-Two layers of edges are written, so the graph is explicit rather than inferred from embeddings alone:
-
-1. **Forceful relations** — every source declares `relations.ids`. Table objects link to the objects of the tables they reference; row batches link to their own table object and its neighbours. The ingest response reports how many edges were created (`graph edges N` in the logs).
-2. **Entity triplets** — the rendered text states each relationship in natural language, which HydraDB's graph extraction turns into entity/relation triplets during its `graph_creation` phase.
-
-Retrieval uses `mode: "thinking"` with `graph_context: true`, which is what activates forceful-relation expansion.
-
-## Run it
-
-```bash
-pnpm install
-pnpm db:up          # postgres + demo schema on :5432
-cp .env.example .env
-pnpm migrate:dry    # introspect only, writes ./out
-pnpm migrate        # migrate to HydraDB
+```
+Postgres ──► introspect ──► classify ──► render ──► pack ──► upload ──► HydraDB
+             tables          layer       prose      byte      markdown
+             columns         per          lines     budget    documents
+             keys, FKs       table                            + memories
 ```
 
-`pnpm migrate:dry` needs no HydraDB key. It writes every table object and a row sample to `./out` so you can inspect the mapping before sending anything.
+**introspect** reads tables, views, columns, primary and unique keys, and foreign keys, deriving one-to-many, many-to-one, many-to-many and self references.
 
-The demo schema in `scripts/seed.sql` covers every relationship type on purpose: `customers → orders → order_items` (one-to-many), `order_items` and `product_tags` (composite primary keys and many-to-many), `categories.parent_id` (self reference), and `order_summary` (view).
+**classify** routes each table to the HydraDB primitive that fits it:
 
-## Configuration
+| Layer      | Table                                                               | Stored as                                                    |
+| ---------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Definition | every table and view                                                | one document describing columns, keys and relationships      |
+| Knowledge  | reference tables                                                    | record lines packed into documents                           |
+| Episodes   | tables with a timestamp column                                      | record lines ordered oldest first, stamped with event time   |
+| Memories   | person-like tables (`users`, `customers`, anything with an `email`) | one memory per entity, in its own collection (`customers:7`) |
 
-| Variable                 | Default                                               | Purpose                                          |
-| ------------------------ | ----------------------------------------------------- | ------------------------------------------------ |
-| `DATABASE_URL`           | `postgresql://postgres:postgres@localhost:5432/appdb` | source database                                  |
-| `PG_SCHEMA`              | `public`                                              | schema to migrate                                |
-| `TABLES` / `SKIP_TABLES` | empty                                                 | restrict the run                                 |
-| `HYDRA_DB_API_KEY`       | —                                                     | required for a live migration                    |
-| `HYDRA_DATABASE`         | `pg2hydra_demo`                                       | target HydraDB database                          |
-| `HYDRA_COLLECTION`       | empty                                                 | optional collection scope                        |
-| `BATCH_SIZE`             | `1000`                                                | rows read per batch, one batch is one source     |
-| `UPLOAD_CHUNK`           | `20`                                                  | sources per ingest request                       |
-| `CONCURRENCY`            | `2`                                                   | parallel ingest requests                         |
-| `MAX_RETRIES`            | `6`                                                   | retries with exponential backoff                 |
-| `VERIFY`                 | `true`                                                | run a query and graph check after migrating      |
-| `WAIT_FOR_GRAPH`         | `false`                                               | wait for `completed` instead of `graph_creation` |
+Automatic, and overridable with `MEMORY_TABLES` / `EPISODE_TABLES`.
 
-Migration is idempotent: source IDs are derived from schema, table, and batch index, and every ingest uses `upsert: true`. Re-running updates in place instead of duplicating.
+**render** turns each row into one line. Null columns are omitted, whitespace is normalised, long values are truncated.
 
-Rows are streamed batch by batch and flushed as soon as `UPLOAD_CHUNK × CONCURRENCY` sources are buffered, so memory stays flat regardless of table size.
+**pack** groups lines into documents up to `DOC_TARGET_BYTES` (24 KB), never splitting a record, so documents stay a consistent size whether a table is narrow or wide.
 
-## Layout
+**upload** sends real markdown documents to `POST /context/ingest`. Each one declares `relations.ids` pointing at its own table definition and those of the tables it references, which is what forms the graph. Rows stream batch by batch, so memory use stays flat regardless of table size.
+
+Source IDs are derived from schema, table, layer and batch index, and every ingest uses `upsert: true`, so re-running updates in place instead of duplicating.
+
+## Project structure
 
 ```
 src/
-  config.ts            env parsing
-  types.ts             shared types
+  index.ts               orchestrator
+  config.ts              env parsing
+  classify.ts            routes tables to knowledge, episodes or memories
+  types.ts               shared types
   pg/
-    client.ts          pool and identifier quoting
-    introspect.ts      tables, columns, primary and unique keys, views
-    relations.ts       foreign keys, cardinality, junction detection
-    rows.ts            batched row reader
+    client.ts            connection pool
+    introspect.ts        tables, columns, keys, views
+    relations.ts         foreign keys and cardinality
+    rows.ts              batched reads
   transform/
-    value.ts           postgres value normalisation
-    render.ts          table object and row batch rendering
-    source.ts          HydraDB source payloads and graph edges
+    text.ts              value cleaning
+    ontology.ts          table definition documents
+    records.ts           record, episode and memory lines
+    pack.ts              byte-budget packing
+    source.ts            document and memory payloads
   hydra/
-    client.ts          database provisioning and indexing status
-    ingest.ts          chunked, concurrent, retrying upload
-    verify.ts          post-migration query and graph check
-  index.ts             orchestrator
+    client.ts            provisioning and indexing status
+    upload.ts            document ingest
+    memories.ts          memory ingest
+    verify.ts            post-migration checks
+scripts/seed.sql         demo schema and data
+docker-compose.yml       local Postgres
 ```
+
+## Local setup
+
+Requires Node 24+, pnpm and Docker.
+
+```bash
+pnpm install
+pnpm db:up                  # Postgres with the demo schema on :5432
+cp .env.example .env        # add your HYDRA_DB_API_KEY
+pnpm migrate:dry            # render only, writes ./out
+pnpm migrate                # migrate to HydraDB
+```
+
+`pnpm migrate:dry` needs no API key. It writes exactly the text that would be uploaded to `./out`, so you can read it first.
+
+The demo schema covers every relationship type: `customers → orders → order_items`, composite keys on `order_items` and `product_tags`, a many-to-many through `product_tags`, a self reference on `categories.parent_id`, and an `order_summary` view.
+
+Other scripts: `pnpm build`, `pnpm typecheck`, `pnpm format`, `pnpm db:down`.
 
 ## Notes
 
-- `graph_creation` is an intermediate state. Sources are fully queryable in it, and forceful relations are already written at ingest, but `GET /context/relations` only reports triplets once a source reaches `completed`. In testing, sources stayed in `graph_creation` for well over half an hour, so `WAIT_FOR_GRAPH` defaults to `false`. Turn it on only if your account's graph phase is finishing promptly, otherwise the run will block.
-- `.env` in this repo contains a real API key. Rotate it and untrack the file: `git rm --cached .env`.
+- Create HydraDB databases without a metadata schema. Declaring `database_metadata_schema` at creation caused databases to report ready and then fail permanently, so `DECLARE_METADATA_SCHEMA` defaults to `false` and the `pg_*` fields ship as `additional_metadata`.
+- Sources become searchable at `graph_creation` and reach `completed` when the graph pass finishes. `WAIT_FOR_GRAPH=false` means the run does not block on that phase.
+- This is a full-copy migration. There is no incremental sync and no delete propagation yet, and rows are paged without a snapshot, so migrate from a quiet or static database.

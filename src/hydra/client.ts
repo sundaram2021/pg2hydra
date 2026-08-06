@@ -31,6 +31,19 @@ export function createClient(): Hydra {
   });
 }
 
+async function assertNotFailed(client: Hydra, database: string): Promise<void> {
+  const listed = await client.databases.list();
+  const failed = (
+    listed.data as unknown as
+      { failed_databases?: { database?: string; error?: string }[] } | undefined
+  )?.failed_databases;
+  const match = failed?.find((entry) => entry.database === database);
+  if (match)
+    throw new Error(
+      `HydraDB reports database ${database} as failed: ${match.error ?? 'unknown'}. Provisioning will never complete; use a new database name.`,
+    );
+}
+
 function alreadyExists(error: unknown): boolean {
   const status = (error as { statusCode?: number })?.statusCode;
   const message = String((error as { message?: string })?.message ?? '');
@@ -42,7 +55,9 @@ export async function ensureDatabase(client: Hydra): Promise<void> {
   try {
     await client.databases.create({
       database,
-      databaseMetadataSchema: METADATA_SCHEMA,
+      ...(config.declareMetadataSchema
+        ? { databaseMetadataSchema: METADATA_SCHEMA }
+        : {}),
     });
     log.info(`created database ${database}`);
   } catch (error) {
@@ -55,6 +70,7 @@ export async function ensureDatabase(client: Hydra): Promise<void> {
     config.bootstrapTimeoutMs,
     5000,
     async () => {
+      await assertNotFailed(client, database);
       const response = await withRetry(
         'databases.status',
         config.maxRetries,

@@ -3,7 +3,6 @@ export type Column = {
   data_type: string;
   nullable: boolean;
   default: string | null;
-  position: number;
 };
 
 export type ManyToOne = {
@@ -38,7 +37,6 @@ export type TableShape = {
   composite_key: boolean;
   unique_keys: string[][];
   view_definition: string | null;
-  estimated_rows: number;
 };
 
 export type Relations = {
@@ -50,27 +48,41 @@ export type Relations = {
 };
 
 export type TableObject = TableShape & {
-  id: string;
   qualified_name: string;
   relations: Relations;
   related_tables: string[];
   row_count: number | null;
 };
 
-export type RowBatch = {
+export type Layer = 'knowledge' | 'episode' | 'memory';
+
+export type TablePlan = {
   table: TableObject;
-  index: number;
-  offset: number;
-  rows: Record<string, unknown>[];
+  layer: Layer;
+  time_column: string | null;
+  entity: string;
 };
 
-export type HydraSource = {
+export type Rendered = {
   id: string;
-  title: string;
-  type: string;
-  timestamp: string;
-  content: { markdown: string };
-  tenant_metadata: Record<string, string>;
+  key: string;
+  text: string;
+  time: string | null;
+};
+
+export type HydraDocument = {
+  id: string;
+  filename: string;
+  text: string;
+  metadata: Record<string, string>;
   additional_metadata: Record<string, unknown>;
-  relations: { ids: string[]; properties?: Record<string, unknown> };
+  relations: string[];
+};
+
+export type HydraMemory = {
+  id: string;
+  collection: string;
+  text: string;
+  metadata: Record<string, string>;
+  additional_metadata: Record<string, unknown>;
 };

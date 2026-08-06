@@ -92,10 +92,6 @@ function buildRelations(
   };
 }
 
-export function sourceId(schema: string, table: string): string {
-  return `pg::${schema}.${table}::object`;
-}
-
 export async function buildTableObjects(
   shapes: TableShape[],
 ): Promise<TableObject[]> {
@@ -114,7 +110,6 @@ export async function buildTableObjects(
 
     return {
       ...shape,
-      id: sourceId(shape.schema, shape.table),
       qualified_name: `${shape.schema}.${shape.table}`,
       relations,
       related_tables: [...related].filter((name) =>

@@ -6,7 +6,6 @@ type TableRow = {
   table_name: string;
   kind: 'table' | 'view';
   comment: string | null;
-  estimated_rows: string;
 };
 type ColumnRow = {
   table_name: string;
@@ -14,7 +13,6 @@ type ColumnRow = {
   data_type: string;
   nullable: string;
   default: string | null;
-  position: number;
 };
 type KeyRow = {
   table_name: string;
@@ -35,8 +33,7 @@ export async function introspect(): Promise<TableShape[]> {
   const tables = await query<TableRow>(
     `SELECT c.relname AS table_name,
             CASE WHEN c.relkind = 'v' THEN 'view' ELSE 'table' END AS kind,
-            obj_description(c.oid) AS comment,
-            GREATEST(c.reltuples, 0)::bigint::text AS estimated_rows
+            obj_description(c.oid) AS comment
        FROM pg_class c
        JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'v')
@@ -46,7 +43,7 @@ export async function introspect(): Promise<TableShape[]> {
 
   const columns = await query<ColumnRow>(
     `SELECT table_name, column_name AS name, data_type, is_nullable AS nullable,
-            column_default AS default, ordinal_position AS position
+            column_default AS default
        FROM information_schema.columns
       WHERE table_schema = $1
       ORDER BY table_name, ordinal_position`,
@@ -87,7 +84,6 @@ export async function introspect(): Promise<TableShape[]> {
           data_type: column.data_type,
           nullable: column.nullable === 'YES',
           default: column.default,
-          position: column.position,
         }),
       );
       const tableKeys = byTable(keys, table.table_name);
@@ -108,7 +104,6 @@ export async function introspect(): Promise<TableShape[]> {
           views
             .find((view) => view.table_name === table.table_name)
             ?.definition?.trim() ?? null,
-        estimated_rows: Number(table.estimated_rows),
       };
     });
 }
